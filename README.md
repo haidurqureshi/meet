@@ -105,13 +105,13 @@ Apache-2.0, from the `@cloudflare/realtimekit` npm package) is served from this 
 
 ### Email (sign-up confirmation, password reset, invitations)
 
-Uses Cloudflare Email Service (the `EMAIL` binding). The sender domain (`EMAIL_FROM`, default `no-reply@known.org.uk`) must be
+Uses Cloudflare Email Service (the `EMAIL` binding). The sender domain (`EMAIL_FROM`, default `no-reply@meet.haidurqureshi.com`) must be
 onboarded: dashboard, **Compute**, **Email Service**, **Email Sending**. Until then emails fail quietly (the app keeps working,
 and `npx wrangler tail` shows the error). To see links in the logs while testing, set `EMAIL_DEV_LOG=1` in `.dev.vars`.
 
 ### Your own address
 
-Uncomment `routes` in `wrangler.jsonc`, e.g. `meet.known.org.uk` (the domain must be on Cloudflare), and deploy.
+Uncomment `routes` in `wrangler.jsonc`, e.g. `meet.haidurqureshi.com` (the domain must be on Cloudflare), and deploy.
 Use the same address in the Stripe webhook URL.
 
 ## Local testing
