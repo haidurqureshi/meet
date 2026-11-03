@@ -12,9 +12,33 @@ import type { Env } from "./env";
 // From the browser: {type:"signal", to, data}  {type:"chat", text}
 
 const MAX = 4;
+// Flood protection per connection: a burst of up to BURST messages, refilling at RATE per second.
+// Setting up a call sends a few dozen ICE candidates at once, so this is generous for real use.
+const BURST = 200;
+const RATE = 20;
+const CHAT_BURST = 10;
+const CHAT_RATE = 1;
 type Who = { pid: string; name: string; host: boolean };
+type Bucket = { tokens: number; chat: number; at: number };
 
 export class RoomDO extends DurableObject<Env> {
+  // In memory only: it resets if the object hibernates, which is fine for flood control.
+  private buckets = new WeakMap<WebSocket, Bucket>();
+
+  private allow(ws: WebSocket, chat: boolean): boolean {
+    const now = Date.now();
+    const b = this.buckets.get(ws) ?? { tokens: BURST, chat: CHAT_BURST, at: now };
+    const dt = (now - b.at) / 1000;
+    b.tokens = Math.min(BURST, b.tokens + dt * RATE);
+    b.chat = Math.min(CHAT_BURST, b.chat + dt * CHAT_RATE);
+    b.at = now;
+    this.buckets.set(ws, b);
+    if (b.tokens < 1 || (chat && b.chat < 1)) return false;
+    b.tokens--;
+    if (chat) b.chat--;
+    return true;
+  }
+
   private open(): WebSocket[] {
     return this.ctx.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN);
   }
@@ -74,7 +98,9 @@ export class RoomDO extends DurableObject<Env> {
       return;
     }
 
-    if (msg.type === "signal" && typeof msg.to === "string" && msg.data && typeof msg.data === "object") {
+    if (!this.allow(ws, msg.type === "chat")) return;
+
+    if (msg.type === "signal" && typeof msg.to === "string" && msg.to !== me.pid && msg.data && typeof msg.data === "object") {
       const out = JSON.stringify({ type: "signal", from: me.pid, data: msg.data });
       for (const w of this.ctx.getWebSockets(msg.to)) if (w.readyState === WebSocket.OPEN) w.send(out);
     } else if (msg.type === "chat" && typeof msg.text === "string") {

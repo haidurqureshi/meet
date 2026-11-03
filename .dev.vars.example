@@ -1,0 +1,12 @@
+# Local testing only. Copy to .dev.vars (which is git-ignored) and fill in.
+SESSION_SECRET=change-me-to-a-long-random-string
+
+# Optional for local testing:
+# STRIPE_SECRET_KEY=sk_test_...
+# STRIPE_WEBHOOK_SECRET=whsec_...
+# TURN_KEY_API_TOKEN=...
+
+# Testing switches. They only take effect on localhost, never in production.
+RTC_ALLOW_DIRECT=1
+DEV_SKIP_BILLING=1
+EMAIL_DEV_LOG=1

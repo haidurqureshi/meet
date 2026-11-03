@@ -22,13 +22,5 @@
 <p class="muted"><a href="/legal">Terms and privacy</a></p>
 </main>
 <script src="/app.js"></script>
-<script>
-App.boot();
-document.getElementById("join").addEventListener("submit", (e) => {
-  e.preventDefault();
-  const c = App.roomCode(document.getElementById("code").value);
-  if (!c) return App.show(document.getElementById("msg"), "error", "That doesn't look like a meeting link.");
-  location.href = "/m/" + c;
-});
-</script>
+<script src="/index.js"></script>
 </body></html>
