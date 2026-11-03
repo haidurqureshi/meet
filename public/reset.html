@@ -1,15 +1,15 @@
 <!doctype html>
 <html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Choose a new password</title><meta name="robots" content="noindex"><link rel="stylesheet" href="/style.css"></head>
+<title>Choose a new password</title><meta name="robots" content="noindex"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"></head>
 <body data-page="reset">
 <header class="top"><a class="brand" href="/" data-app>Meet</a><nav id="nav"></nav></header>
 <main class="card">
 <h1>Choose a new password</h1>
 <form novalidate>
-<label>New password <span class="muted">(8 or more characters)</span><input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+<label>New password<input name="password" type="password" autocomplete="new-password" minlength="8" required autofocus aria-describedby="pwhint"><span class="hint" id="pwhint">At least 8 characters. You'll be signed out everywhere else.</span></label>
 <label>Repeat password<input name="password2" type="password" autocomplete="new-password" required></label>
 <div id="msg" hidden></div>
-<div class="row"><button class="primary">Save password</button></div>
+<div class="row"><button class="primary big">Save password</button></div>
 </form></main>
 <script src="/app.js"></script>
 <script src="/auth.js"></script>

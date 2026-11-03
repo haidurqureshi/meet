@@ -1,17 +1,19 @@
 <!doctype html>
 <html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Forgot password</title><meta name="robots" content="noindex"><link rel="stylesheet" href="/style.css"></head>
+<title>Forgot password</title><meta name="robots" content="noindex"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"></head>
 <body data-page="forgot">
 <header class="top"><a class="brand" href="/" data-app>Meet</a><nav id="nav"></nav></header>
 <main class="card">
 <h1>Reset your password</h1>
-<p class="muted">Enter your email and we'll send you a link.</p>
+<p class="muted">Enter the email you signed up with and we'll send you a link to choose a new password.</p>
 <form novalidate>
-<label>Email<input name="email" type="email" autocomplete="email" required></label>
+<label>Email<input name="email" type="email" autocomplete="email" inputmode="email" required autofocus></label>
 <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
 <div id="msg" hidden></div>
-<div class="row"><button class="primary">Send link</button><a href="/login">Back to log in</a></div>
-</form><div id="msg2"></div></main>
+<div class="row"><button class="primary big">Send link</button></div>
+</form>
+<p class="alt">Remembered it? <a href="/login">Back to log in</a></p>
+</main>
 <script src="/app.js"></script>
 <script src="/auth.js"></script>
 </body></html>
