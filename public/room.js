@@ -6,6 +6,11 @@
   let info = null, join = null, ws = null, localStream = null, screenStream = null;
   let micOn = true, camOn = true, sharing = false, left = false, failures = 0, retryTimer = null, unread = 0;
   const peers = new Map();
+  // Up to 4 people connect directly ("mesh"). When a 5th joins, the room switches everyone to Cloudflare RealtimeKit,
+  // where Cloudflare's servers forward the video. The room's server tells us when ("upgrade"); our connection to it
+  // stays open for chat and the people count.
+  let rtk = null, rtkDevices = { mic: false, cam: false }, upgrading = null;
+  const names = new Map(); // who is here, from the room server (used for join/leave messages)
   // "speaker": the others fill the screen and your own camera floats small in a corner (like Zoom).
   // "gallery": everyone the same size. The choice and the corner are remembered.
   let view = "speaker", pipCorner = "br";
@@ -46,6 +51,7 @@
     panel("lobby");
     $("#ltitle").textContent = info.title;
     $("#lhost").textContent = info.isHost ? "You're the host" : `Hosted by ${info.hostName}`;
+    if (info.maxPeople) $("#lmax").textContent = `Up to ${info.maxPeople} people. Nothing is recorded.`;
     let saved = "";
     try { saved = localStorage.getItem("meet-name") || ""; } catch { /* ignore */ }
     $("#lname").value = info.userName || saved;
@@ -80,17 +86,22 @@
 
   const audioTrack = () => localStream && localStream.getAudioTracks()[0];
   const videoTrack = () => localStream && localStream.getVideoTracks()[0];
+  const hasMic = () => (rtk ? rtkDevices.mic : !!audioTrack());
+  const hasCam = () => (rtk ? rtkDevices.cam : !!videoTrack());
 
   function syncButtons() {
-    const a = audioTrack(), v = videoTrack();
+    const a = hasMic(), v = hasCam();
     for (const [id, on, onText, offText, has] of [["lmic", micOn, "Mute", "Unmute", a], ["cmic", micOn, "Mute", "Unmute", a], ["lcam", camOn, "Stop video", "Start video", v], ["ccam", camOn, "Stop video", "Start video", v]]) {
       const b = $("#" + id);
       b.disabled = !has;
       b.setAttribute("aria-pressed", String(!on || !has));
       b.querySelector(".lbl").textContent = !has ? (id.endsWith("mic") ? "No mic" : "No camera") : on ? onText : offText;
     }
-    if (a) a.enabled = micOn;
-    if (v) v.enabled = camOn;
+    if (!rtk) {
+      const at = audioTrack(), vt = videoTrack();
+      if (at) at.enabled = micOn;
+      if (vt) vt.enabled = camOn;
+    }
     const canShare = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
     $("#cshare").hidden = !canShare; // phones can't share their screen
     $("#cshare").querySelector(".lbl").textContent = sharing ? "Stop share" : "Share";
@@ -106,8 +117,16 @@
     const state = { mic: micOn && !!audioTrack(), cam: (camOn && !!videoTrack()) || sharing, share: sharing };
     for (const id of peers.keys()) send({ type: "signal", to: id, data: { state } });
   }
-  const toggleMic = () => { micOn = !micOn; syncButtons(); broadcastState(); };
-  const toggleCam = () => { camOn = !camOn; syncButtons(); broadcastState(); };
+  async function rtkSet(kind, on) {
+    try {
+      if (kind === "mic") await (on ? rtk.self.enableAudio() : rtk.self.disableAudio());
+      else await (on ? rtk.self.enableVideo() : rtk.self.disableVideo());
+    } catch (err) { console.warn("RealtimeKit", kind, err); }
+    micOn = !!rtk.self.audioEnabled; camOn = !!rtk.self.videoEnabled;
+    syncButtons();
+  }
+  const toggleMic = () => { micOn = !micOn; if (rtk) return rtkSet("mic", micOn); syncButtons(); broadcastState(); };
+  const toggleCam = () => { camOn = !camOn; if (rtk) return rtkSet("cam", camOn); syncButtons(); broadcastState(); };
   $("#lmic").onclick = $("#cmic").onclick = toggleMic;
   $("#lcam").onclick = $("#ccam").onclick = toggleCam;
 
@@ -253,7 +272,7 @@
     const float = floating();
     if (float) { const s = $("#tile-self.spot"); if (s) { s.classList.remove("spot"); } }
     const shown = float ? n - 1 : n; // the floating self view doesn't take a place in the grid
-    $("#tiles").className = "tiles n" + Math.min(Math.max(shown, 1), 4) + ($("#tiles .tile.spot") ? " has-spot" : "") + (float ? " float-self pip-" + pipCorner : "");
+    $("#tiles").className = "tiles " + (shown > 4 ? "nmany" : "n" + Math.max(shown, 1)) + ($("#tiles .tile.spot") ? " has-spot" : "") + (float ? " float-self pip-" + pipCorner : "");
     const self = $("#tile-self");
     if (self) self.title = float ? "Your camera. Drag it to another corner." : "Click to enlarge";
     const vb = $("#rview");
@@ -359,11 +378,25 @@
 
   function onMessage(m) {
     if (m.type === "joined") {
+      names.clear();
+      for (const p of m.peers) names.set(p.id, p.name);
+      if (m.mode === "rtk" || rtk || upgrading) { for (const id of [...peers.keys()]) dropPeer(id); return upgradeToRtk(); }
       const ids = new Set(m.peers.map((p) => p.id));
       for (const id of [...peers.keys()]) if (!ids.has(id)) dropPeer(id);
       // People already in the room wait for us; we call each of them.
       for (const p of m.peers) if (!peers.has(p.id)) { newPeer(p.id, p.name, p.host); callPeer(p.id).catch((err) => console.warn("call failed", err)); }
+    } else if (m.type === "upgrade") {
+      upgradeToRtk();
+    } else if (m.type === "peer-joined" && (rtk || upgrading)) {
+      names.set(m.id, m.name);
+      toast(`${m.name || "Someone"} joined`);
+    } else if (m.type === "peer-left" && (rtk || upgrading)) {
+      toast(`${names.get(m.id) || "Someone"} left`);
+      names.delete(m.id);
+    } else if (m.type === "signal" && (rtk || upgrading)) {
+      // direct-call messages don't apply any more
     } else if (m.type === "peer-joined") {
+      names.set(m.id, m.name);
       // They'll send us an offer. Forget any stale connection to the same person (e.g. after a reload).
       dropPeer(m.id);
       newPeer(m.id, m.name, m.host);
@@ -377,8 +410,111 @@
     } else if (m.type === "chat") {
       addChat(m.name, m.text, false);
     } else if (m.type === "full") {
-      endCall("Meeting is full", "This meeting already has 4 people.");
+      endCall("Meeting is full", `This meeting already has ${m.max || 4} people.`);
     }
+  }
+
+  /* ---------- larger calls: Cloudflare RealtimeKit ---------- */
+  function loadRtkSdk() {
+    if (window.RealtimeKitClient) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const sc = document.createElement("script");
+      sc.src = "/vendor/realtimekit-2.0.4.js";
+      sc.onload = () => resolve();
+      sc.onerror = () => reject(new Error("couldn't load RealtimeKit"));
+      document.head.append(sc);
+    });
+  }
+
+  function upgradeToRtk() {
+    if (rtk || upgrading) return upgrading;
+    upgrading = (async () => {
+      setState("Moving to a larger call…");
+      toast("More people are joining, so the call is moving to Cloudflare's servers");
+      // Stop the direct connections and give the camera/mic back, so RealtimeKit can use them.
+      rtkDevices = { mic: !!audioTrack(), cam: !!videoTrack() };
+      for (const id of [...peers.keys()]) dropPeer(id);
+      if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
+      if (localStream) localStream.getTracks().forEach((t) => t.stop());
+      screenStream = null; sharing = false;
+      try {
+        await loadRtkSdk();
+        let r = await api("/api/join/rtk", { room: code, key, name: join.name });
+        for (let i = 0; i < 3 && !r.ok && r.data.code === "not_upgraded"; i++) { // the room server may not have switched yet
+          await new Promise((ok) => setTimeout(ok, 800));
+          r = await api("/api/join/rtk", { room: code, key, name: join.name });
+        }
+        if (!r.ok) throw new Error(r.data.error || "no token");
+        const meeting = await window.RealtimeKitClient.init({
+          authToken: r.data.token,
+          defaults: { audio: micOn && rtkDevices.mic, video: camOn && rtkDevices.cam },
+        });
+        if (left) { meeting.leave().catch(() => {}); return; }
+        rtk = meeting;
+        wireRtk(meeting);
+        await meeting.join();
+        setState("");
+        syncButtons();
+        renderRtkSelf();
+        for (const p of meeting.participants.joined.values()) renderRtkPeer(p);
+      } catch (err) {
+        console.error("Couldn't switch to RealtimeKit:", err);
+        if (!left) endCall("Couldn't move the call", "The meeting grew past 4 people, but we couldn't move it to the larger-call service. Please rejoin.", true);
+      } finally {
+        upgrading = null;
+      }
+    })();
+    return upgrading;
+  }
+
+  function wireRtk(meeting) {
+    const J = meeting.participants.joined;
+    J.on("participantJoined", (p) => renderRtkPeer(p));
+    J.on("participantLeft", (p) => { const t = $("#tile-rtk-" + p.id); if (t) t.remove(); layout(); });
+    for (const ev of ["videoUpdate", "audioUpdate", "screenShareUpdate"]) J.on(ev, (p) => renderRtkPeer(p));
+    for (const ev of ["videoUpdate", "audioUpdate", "screenShareUpdate"]) meeting.self.on(ev, () => { micOn = !!meeting.self.audioEnabled; camOn = !!meeting.self.videoEnabled; sharing = !!meeting.self.screenShareEnabled; renderRtkSelf(); syncButtons(); });
+    meeting.participants.on("activeSpeaker", ({ peerId }) => {
+      const t = $("#tile-rtk-" + peerId);
+      if (!t) return;
+      t.classList.add("speaking");
+      clearTimeout(t._speak);
+      t._speak = setTimeout(() => t.classList.remove("speaking"), 1500);
+    });
+    // The browser may block sound until the page is tapped.
+    meeting.self.on("autoplayError", () => {
+      toast("Tap anywhere to hear the others");
+      addEventListener("pointerdown", () => meeting.self.playAudio().catch(() => {}), { once: true });
+    });
+    meeting.self.on("roomLeft", ({ state }) => {
+      if (left || rtk !== meeting) return;
+      if (state === "kicked") endCall("Removed from the meeting", "The host removed you from this meeting.");
+      else if (state === "ended") endCall("Meeting ended", "The meeting has ended.");
+      else if (state === "failed" || state === "disconnected") endCall("Disconnected", "We lost the connection to the call.", true);
+    });
+  }
+
+  function trackStream(track) { return track ? new MediaStream([track]) : null; }
+
+  function renderRtkSelf() {
+    if (!rtk) return;
+    const me = rtk.self;
+    const t = addTile("self", join.name, null, true);
+    const v = t.querySelector("video");
+    const track = me.screenShareEnabled && me.screenShareTracks && me.screenShareTracks.video ? me.screenShareTracks.video : me.videoEnabled ? me.videoTrack : null;
+    if (!track || !v.srcObject || v.srcObject.getVideoTracks()[0] !== track) v.srcObject = trackStream(track);
+    setTileState(t, { mic: !!me.audioEnabled, cam: !!track, share: !!me.screenShareEnabled });
+  }
+
+  function renderRtkPeer(p) {
+    if (!rtk || p.id === rtk.self.id) return;
+    const t = addTile("rtk-" + p.id, (p.name || "Guest") + (p.isHost ? " (host)" : ""), null, false);
+    t.querySelector(".ov").hidden = true;
+    const v = t.querySelector("video");
+    const share = !!(p.screenShareEnabled && p.screenShareTracks && p.screenShareTracks.video);
+    const track = share ? p.screenShareTracks.video : p.videoEnabled ? p.videoTrack : null;
+    if (!track) v.srcObject = null;
+    else if (!v.srcObject || v.srcObject.getVideoTracks()[0] !== track) { v.srcObject = trackStream(track); v.play().catch(() => {}); }
+    setTileState(t, { mic: !!p.audioEnabled, cam: !!track, share });
   }
 
   /* ---------- peer connections ---------- */
@@ -487,6 +623,7 @@
     if (self) self.srcObject = track ? new MediaStream([track]) : localStream;
   }
   async function startShare() {
+    if (rtk) { try { await rtk.self.enableScreenShare(); toast("You're sharing your screen"); } catch { /* cancelled */ } return; }
     try { screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15, max: 30 } }, audio: false }); } catch { return; }
     const t = screenStream.getVideoTracks()[0];
     t.onended = stopShare;
@@ -497,6 +634,7 @@
     toast("You're sharing your screen");
   }
   async function stopShare() {
+    if (rtk) { try { await rtk.self.disableScreenShare(); } catch { /* ignore */ } return; }
     if (!sharing) return;
     sharing = false;
     if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
@@ -554,9 +692,9 @@
     const inCall = !$("#room").hidden, inLobby = !$("#lobby").hidden;
     if (!inCall && !inLobby) return;
     const k = e.key.toLowerCase();
-    if (k === "m" && audioTrack()) { e.preventDefault(); toggleMic(); toast(micOn ? "Microphone on" : "Microphone muted"); }
+    if (k === "m" && hasMic()) { e.preventDefault(); toggleMic(); toast(micOn ? "Microphone on" : "Microphone muted"); }
     else if (k === "g" && inCall && $("#tiles").children.length > 1) { e.preventDefault(); setView(view === "speaker" ? "gallery" : "speaker"); }
-    else if (k === "v" && videoTrack()) { e.preventDefault(); toggleCam(); toast(camOn ? "Camera on" : "Camera off"); }
+    else if (k === "v" && hasCam()) { e.preventDefault(); toggleCam(); toast(camOn ? "Camera on" : "Camera off"); }
   });
 
   /* ---------- leaving ---------- */
@@ -565,6 +703,7 @@
     clearTimeout(retryTimer);
     try { if (ws) ws.close(1000, "bye"); } catch { /* ignore */ }
     for (const id of [...peers.keys()]) dropPeer(id);
+    if (rtk) { rtk.leave().catch(() => {}); rtk = null; }
     if (screenStream) screenStream.getTracks().forEach((t) => t.stop());
     if (localStream) localStream.getTracks().forEach((t) => t.stop());
     localStream = screenStream = null; sharing = false;
@@ -574,7 +713,9 @@
   function endCall(title, text, retry) { cleanup(); notice(title, text, retry); }
   $("#cleave").onclick = () => { cleanup(); notice("You left the meeting", "You can rejoin any time while it's open.", true); };
   $("#nretry").onclick = () => location.reload();
-  addEventListener("pagehide", () => { if (ws) try { ws.close(1000, "bye"); } catch { /* ignore */ } });
+  addEventListener("pagehide", () => { if (rtk) rtk.leave().catch(() => {}); if (ws) try { ws.close(1000, "bye"); } catch { /* ignore */ } });
+  // If a policy ever blocks something the call needs, say so in the console (helps when setting up RealtimeKit).
+  addEventListener("securitypolicyviolation", (e) => console.warn("Blocked by the site's security policy:", e.blockedURI, e.violatedDirective));
 
   start();
 })();

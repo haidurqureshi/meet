@@ -25,7 +25,17 @@
     // Must be an address on a domain onboarded for Email Sending.
     "EMAIL_FROM": "no-reply@known.org.uk",
     // Cloudflare Realtime TURN key ID (dashboard -> Realtime -> TURN). Not secret.
-    "TURN_KEY_ID": "c801e53dd0f27d607d58e376c42bbd98"
+    "TURN_KEY_ID": "c801e53dd0f27d607d58e376c42bbd98",
+
+    // OPTIONAL: Cloudflare RealtimeKit, used when a meeting grows past 4 people (see README, "Larger meetings").
+    // Leave RTK_APP_ID empty to keep meetings at 4 people. The API token is a secret: npx wrangler secret put RTK_API_TOKEN
+    "RTK_ACCOUNT_ID": "",
+    "RTK_APP_ID": "",
+    // Presets (Realtime -> RealtimeKit -> your app -> Presets) for the host and for everyone else.
+    "RTK_PRESET_HOST": "group_call_host",
+    "RTK_PRESET_GUEST": "group_call_participant",
+    // Most people allowed once a meeting has switched to RealtimeKit (5 to 100).
+    "RTK_MAX_PARTICIPANTS": "20"
   },
 
   // To serve from your own domain (domain must be on Cloudflare), uncomment:

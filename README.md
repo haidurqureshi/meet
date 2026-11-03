@@ -2,8 +2,8 @@
 
 A separate app (its own Worker, D1 database and Durable Objects; nothing to do with the tutoring site).
 People **sign up free** with an email and password. **Hosting** meetings needs an active **£10/month** subscription (Stripe).
-**Guests** join from a link with no account and it's free. Up to **4 people** per meeting, camera, microphone,
-screen sharing and chat. Nothing is recorded.
+**Guests** join from a link with no account and it's free. Up to **4 people** per meeting (or up to 20 with the optional
+RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing is recorded.
 
 | URL | What it is |
 |---|---|
@@ -81,6 +81,28 @@ Check Cloudflare's Realtime pricing page for current numbers. At £10 a month pe
 After paying, the person is sent back to the dashboard and the app confirms the payment straight with Stripe, so access
 appears immediately; the webhook then keeps renewals, failed payments and cancellations in sync.
 
+### Larger meetings: Cloudflare RealtimeKit (optional)
+
+Calls start as direct connections (free apart from TURN data). If a **5th person** joins and RealtimeKit is set up,
+the whole meeting switches to Cloudflare RealtimeKit, where Cloudflare's media servers forward each person's video to
+everyone else, so it works for bigger groups. Everyone's screen switches over by itself in a second or two (the call
+looks the same; chat and the people count keep working) and the meeting stays on RealtimeKit until everyone has left.
+Without this setup, the 5th person sees "Meeting is full", as before.
+
+1. Cloudflare dashboard, **Realtime**, **RealtimeKit**: create an app. Copy the **App ID**.
+2. In that app, check the **Presets**. The app uses `group_call_host` for the host and `group_call_participant` for
+   everyone else. If yours are named differently, put their names in `RTK_PRESET_HOST` / `RTK_PRESET_GUEST`.
+3. Create an **API token** (My Profile, API Tokens) with **Realtime** edit permission for your account.
+4. In `wrangler.jsonc` set `RTK_ACCOUNT_ID` (your account ID, shown on the dashboard's overview page) and `RTK_APP_ID`.
+   `RTK_MAX_PARTICIPANTS` (default 20) caps meetings once they've switched.
+5. `npx wrangler secret put RTK_API_TOKEN`, then `npm run deploy`.
+
+**Cost:** RealtimeKit is billed per participant minute. Check Cloudflare's RealtimeKit pricing before turning it on.
+Only meetings that actually grow past 4 people use it. The browser part of RealtimeKit (`public/vendor/realtimekit-2.0.4.js`,
+Apache-2.0, from the `@cloudflare/realtimekit` npm package) is served from this site rather than a CDN.
+
+**If a switch fails** ("Couldn't move the call"), `npx wrangler tail` shows why (e.g. a wrong App ID, token or preset name).
+
 ### Email (sign-up confirmation, password reset, invitations)
 
 Uses Cloudflare Email Service (the `EMAIL` binding). The sender domain (`EMAIL_FROM`, default `no-reply@known.org.uk`) must be
@@ -106,7 +128,8 @@ They only take effect under `wrangler dev` (they're ignored on Cloudflare), but 
 
 ## Limits
 
-- 4 people per meeting (a mesh doesn't scale beyond that; going bigger means a media server such as Cloudflare Realtime SFU).
+- 4 people per meeting on direct connections (a mesh doesn't scale beyond that). With RealtimeKit set up, meetings switch
+  over automatically from the 5th person, up to `RTK_MAX_PARTICIPANTS`.
 - Screen sharing works on desktop browsers; phones can watch a shared screen but not share one.
 - Camera and microphone need `https://` (workers.dev and custom domains both are) or `localhost`.
 - No recording, waiting room or whiteboard. Anyone with a meeting link can join as a guest, so send links only to the people you mean.

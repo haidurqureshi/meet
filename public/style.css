@@ -244,3 +244,7 @@ body.in-call .toast { bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
 .tiles.float-self #tile-self .avatar span { width: 2.75rem; font-size: 1.1rem; }
 @media (max-aspect-ratio: 1/1) { .tiles.float-self #tile-self { width: clamp(6rem, 30%, 9rem); aspect-ratio: 3/4; } }
 @media (max-width: 480px) { .bar button span { display: none; } .bar button { padding: 0 .6rem; } }
+
+/* more than 4 people (RealtimeKit calls): a scrolling grid */
+.tiles.nmany { grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); grid-template-rows: none; grid-auto-rows: minmax(9rem, 1fr); overflow-y: auto; align-content: start; }
+@media (min-width: 1100px) { .tiles.nmany { grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); } }
