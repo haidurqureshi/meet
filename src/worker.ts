@@ -20,7 +20,10 @@ function securityHeaders(url: URL): Record<string, string> {
       "style-src 'self'",
       "img-src 'self' data:",
       "media-src 'self' blob:",
-      "connect-src 'self'",
+      // RealtimeKit (only used once a meeting grows past 4 people) talks to Cloudflare's realtime servers
+      // and runs a small timer worker from a blob: URL.
+      "connect-src 'self' https://*.realtime.cloudflare.com wss://*.realtime.cloudflare.com",
+      "worker-src 'self' blob:",
       "object-src 'none'",
       "base-uri 'none'",
       "form-action 'self'",

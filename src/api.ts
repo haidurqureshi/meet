@@ -16,6 +16,7 @@ import {
 import { formatWhen, inviteEmail, passwordChangedEmail, resetEmail, sendEmail, verifyEmail } from "./email";
 import type { Env } from "./env";
 import { getIce } from "./ice";
+import { rtkConfigured, rtkMax } from "./realtimekit";
 import { clearHits, isLimited, recordHit } from "./ratelimit";
 import {
   createPortalSession,
@@ -597,6 +598,7 @@ async function roomInfo(c: Ctx, id: string): Promise<Response> {
     status: roomStatus(c.env, r, isHost),
     isHost,
     userName: me?.name ?? "",
+    maxPeople: rtkConfigured(c.env) ? rtkMax(c.env) : 4,
     appName: c.env.APP_NAME,
   });
 }
@@ -621,7 +623,39 @@ async function joinRoom(c: Ctx): Promise<Response> {
   const ice = await getIce(c.env, lifetimeMs / 1000);
   if (!ice) return fail("Video isn't switched on yet: the Cloudflare TURN key is missing or isn't working.", 503);
   const token = await signJoin(c.env.SESSION_SECRET, { room: id, pid, name, host: isHost, exp: Date.now() + lifetimeMs });
-  return json({ token, pid, key: deviceKey, isHost, iceServers: ice.iceServers, relayOnly: ice.relayOnly, appName: c.env.APP_NAME });
+  return json({ token, pid, key: deviceKey, isHost, largeCalls: rtkConfigured(c.env) ? rtkMax(c.env) : 0, iceServers: ice.iceServers, relayOnly: ice.relayOnly, appName: c.env.APP_NAME });
+}
+
+/**
+ * A RealtimeKit token, for a meeting that has grown past 4 people and switched over. The room's Durable Object
+ * decides: it only gives one to someone who is connected to this meeting right now, once the meeting has switched.
+ */
+async function joinRtk(c: Ctx): Promise<Response> {
+  const b = await body(c.req);
+  const key = `rtk:ip:${ip(c.req)}`;
+  if (await isLimited(c.env.DB, key, 60, 3600_000)) return fail("Too many attempts. Please try again later.", 429);
+  await recordHit(c.env.DB, key);
+  const id = str(b.room, 20);
+  const r = await findRoom(c.env, id);
+  if (!r) return fail("This meeting link isn't valid. Check you copied all of it.", 404);
+  const me = await getUser(c);
+  const isHost = !!me && me.id === r.ownerId;
+  const status = roomStatus(c.env, r, isHost);
+  if (status !== "open") return fail("This meeting isn't open right now.", 403);
+  if (typeof b.key !== "string" || !/^[A-Za-z0-9_-]{22,64}$/.test(b.key)) return fail("Please rejoin the meeting.", 400);
+  const pid = await participantId(c.env.SESSION_SECRET, id, b.key);
+  const name = str(b.name, 40).replace(/[<>]/g, "").replace(/\(host\)/gi, "").trim() || me?.name || "Guest";
+  const stub = c.env.ROOMS.get(c.env.ROOMS.idFromName(id));
+  const res = await stub.fetch("https://room/rtk-token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pid, name, host: isHost, title: r.title }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
+  if (res.ok && data.token) return json({ token: data.token });
+  if (data.error === "not_upgraded") return fail("This meeting is still a small call.", 409, { code: "not_upgraded" });
+  if (data.error === "not_in_room") return fail("Please rejoin the meeting.", 403);
+  return fail("We couldn't move the meeting to the larger-call service. Please try again in a moment.", 502);
 }
 
 /* ---------- router ---------- */
@@ -658,6 +692,7 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   if (path === "/api/reset" && post) return resetPassword(c);
   if (path === "/api/verify" && post) return verify(c);
   if (path === "/api/join" && post) return joinRoom(c);
+  if (path === "/api/join/rtk" && post) return joinRtk(c);
   const room = /^\/api\/room\/([a-z2-9]{12})$/.exec(path);
   if (room && req.method === "GET") return roomInfo(c, room[1]);
 
