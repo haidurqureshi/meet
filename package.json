@@ -1,0 +1,17 @@
+{
+  "name": "meet-app",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute DB --local --file=./db/schema.sql",
+    "db:remote": "node scripts/db-remote.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261030.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.156.0"
+  }
+}

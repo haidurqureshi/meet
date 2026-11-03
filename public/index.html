@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meet</title><meta name="robots" content="noindex"><link rel="stylesheet" href="/style.css"></head>
+<body data-page="home">
+<header class="top"><a class="brand" href="/" data-app>Meet</a><nav id="nav"></nav></header>
+<main class="hero">
+<h1><span data-app>Meet</span>: private video meetings</h1>
+<p class="lead">Host calls with up to four people, with screen sharing and chat. Everything is relayed, nothing is recorded. Guests join from a link, no account needed.</p>
+<div class="row center"><a class="btn primary big" href="/signup">Create an account</a><a class="btn big" href="/login">Log in</a></div>
+<p class="muted">Hosting is <strong data-price></strong>. Joining is free.</p>
+<form id="join" class="joinbox" novalidate>
+<label for="code">Got a meeting link?</label>
+<div class="row"><input id="code" placeholder="Paste the link or code" autocomplete="off"><button class="primary">Join</button></div>
+<div id="msg" hidden></div>
+</form>
+<ul class="features">
+<li><strong>Personal room</strong>A link that's always yours, open whenever you are.</li>
+<li><strong>Scheduled meetings</strong>Pick a time and we email the invitations.</li>
+<li><strong>Up to 4 people</strong>Camera, microphone, screen share and chat.</li>
+<li><strong>Private</strong>All media goes through Cloudflare's relay. No recordings.</li>
+</ul>
+<p class="muted"><a href="/legal">Terms and privacy</a></p>
+</main>
+<script src="/app.js"></script>
+<script>
+App.boot();
+document.getElementById("join").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const c = App.roomCode(document.getElementById("code").value);
+  if (!c) return App.show(document.getElementById("msg"), "error", "That doesn't look like a meeting link.");
+  location.href = "/m/" + c;
+});
+</script>
+</body></html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard</title><meta name="robots" content="noindex"><link rel="stylesheet" href="/style.css"></head>
+<body data-page="dashboard">
+<header class="top"><a class="brand" href="/" data-app>Meet</a><nav><span id="who" class="muted"></span><button id="logout" class="linkbtn">Log out</button></nav></header>
+<main class="dash">
+<div id="flash" hidden></div>
+<section id="verifyBox" class="panel" hidden>
+  <p><strong>Please confirm your email.</strong> We sent a link to <span id="vemail"></span>. You need this before you can send invitations.</p>
+  <div class="row"><button id="resend">Send it again</button><span id="vmsg" class="muted"></span></div>
+</section>
+
+<section class="panel" id="billing">
+  <h2>Host account</h2>
+  <div id="billingBody"></div>
+  <div id="bmsg" hidden></div>
+</section>
+
+<section class="panel" id="hostTools">
+  <h2>Start a meeting</h2>
+  <div class="row"><button id="instant" class="primary">Start an instant meeting</button><a id="personalGo" class="btn" href="#">Open my personal room</a></div>
+  <label>Your personal room link <span class="muted">(always the same, open whenever you're there)</span></label>
+  <div class="row nogap"><input id="personalUrl" readonly><button id="personalCopy">Copy</button></div>
+  <div id="imsg" hidden></div>
+</section>
+
+<section class="panel" id="schedule">
+  <h2>Schedule a meeting</h2>
+  <form id="sform" novalidate>
+    <label>Title<input name="title" maxlength="100" placeholder="Team catch-up"></label>
+    <div class="cols">
+      <label>Date<input name="date" type="date" required></label>
+      <label>Time<input name="time" type="time" required></label>
+      <label>Length<select name="duration"><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60" selected>1 hour</option><option value="90">1.5 hours</option><option value="120">2 hours</option><option value="240">4 hours</option></select></label>
+    </div>
+    <label>Invite by email <span class="muted">(separate with commas or spaces, up to 10)</span><textarea name="invitees" rows="2" placeholder="sam@example.com, alex@example.com"></textarea></label>
+    <label>Message <span class="muted">(optional)</span><textarea name="note" rows="2" maxlength="500"></textarea></label>
+    <p class="muted">Times are in your time zone: <span id="tz"></span>. Invitations show the time in that zone too.</p>
+    <div id="smsg" hidden></div>
+    <div class="row"><button class="primary">Schedule and send invitations</button></div>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Upcoming meetings</h2>
+  <ul id="upcoming" class="meetings"></ul>
+  <details><summary>Past meetings</summary><ul id="past" class="meetings"></ul></details>
+</section>
+
+<section class="panel">
+  <h2>Your account</h2>
+  <details><summary>Delete my account</summary>
+    <p class="muted">This permanently deletes your account, meetings and invitations. Cancel your subscription first.</p>
+    <form id="dform" novalidate><label>Your password<input name="password" type="password" autocomplete="current-password" required></label>
+    <div id="dmsg" hidden></div><div class="row"><button class="danger">Delete everything</button></div></form>
+  </details>
+</section>
+</main>
+<script src="/app.js"></script>
+<script src="/dashboard.js"></script>
+</body></html>

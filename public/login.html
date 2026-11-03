@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Log in</title><meta name="robots" content="noindex"><link rel="stylesheet" href="/style.css"></head>
+<body data-page="login">
+<header class="top"><a class="brand" href="/" data-app>Meet</a><nav id="nav"></nav></header>
+<main class="card">
+<h1>Log in</h1>
+<form novalidate>
+<label>Email<input name="email" type="email" autocomplete="email" required></label>
+<label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+<div id="msg" hidden></div>
+<div class="row"><button class="primary">Log in</button><a href="/forgot">Forgot password?</a><a href="/signup">Create an account</a></div>
+</form></main>
+<script src="/app.js"></script>
+<script src="/auth.js"></script>
+</body></html>

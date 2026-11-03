@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // IMPORTANT: if you already have a Worker with this name, deploying will REPLACE it.
+  "name": "meet-app",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-10-01",
+  "observability": { "enabled": true },
+  // The web pages in /public. The Worker runs first so it can protect and route requests.
+  "assets": { "directory": "public", "binding": "ASSETS", "run_worker_first": true },
+  // One tiny Durable Object per meeting: it only passes "find each other" messages and chat. No media goes through it.
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "RoomDO" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RoomDO"] }],
+  // Accounts and meetings. `npm run db:remote` creates the database and fills in the id for you.
+  "d1_databases": [{ "binding": "DB", "database_name": "meet-db", "database_id": "9f4994e2-7a87-418a-872f-33300297c4d5" }],
+  // Account emails (verify, password reset, meeting invitations) via Cloudflare Email Service.
+  // The sender domain must be onboarded (dashboard -> Compute -> Email Service -> Email Sending).
+  "send_email": [{ "name": "EMAIL" }],
+  "vars": {
+    // Name shown on the pages and in emails.
+    "APP_NAME": "Meet",
+    // Price of a host account per month, in pence (1000 = £10). Used for the subscription and shown on the pages.
+    "PRICE_PENCE": "1000",
+    // OPTIONAL: a Stripe recurring Price ID (price_...). If set it overrides PRICE_PENCE. Leave "" to charge PRICE_PENCE.
+    "STRIPE_PRICE_ID": "",
+    // Must be an address on a domain onboarded for Email Sending.
+    "EMAIL_FROM": "no-reply@known.org.uk",
+    // Cloudflare Realtime TURN key ID (dashboard -> Realtime -> TURN). Not secret.
+    "TURN_KEY_ID": "c801e53dd0f27d607d58e376c42bbd98"
+  },
+
+  // To serve from your own domain (domain must be on Cloudflare), uncomment:
+  "routes": [{ "pattern": "meet.haidurqureshi.com", "custom_domain": true }]
+}

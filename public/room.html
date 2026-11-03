@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meeting</title><meta name="robots" content="noindex"><link rel="stylesheet" href="/style.css"></head>
+<body data-page="room">
+<main id="notice" class="card" hidden>
+  <h1 id="ntitle"></h1><p id="ntext"></p>
+  <div class="row"><a class="btn" href="/" id="nhome">Home</a><button id="nretry" class="primary" hidden>Rejoin</button></div>
+</main>
+
+<section id="lobby" class="lobby" hidden>
+  <p class="muted"><span id="lhost"></span></p>
+  <h1 id="ltitle">Meeting</h1>
+  <div class="preview"><video id="lpreview" autoplay muted playsinline></video><p id="lnocam">Starting your camera…</p></div>
+  <div class="row center">
+    <button id="lmic" class="toggle" aria-pressed="false">Mute</button>
+    <button id="lcam" class="toggle" aria-pressed="false">Camera off</button>
+  </div>
+  <label>Your name<input id="lname" maxlength="40" autocomplete="name"></label>
+  <div id="lmsg" hidden></div>
+  <div class="row center"><button id="ljoin" class="primary big">Join meeting</button></div>
+  <p class="muted small">Up to 4 people. Nothing is recorded.</p>
+</section>
+
+<section id="room" class="room" hidden>
+  <div class="bar">
+    <strong id="rtitle"></strong>
+    <span><span id="rcount" class="pill live">1 here</span> <span id="rroute" class="pill live" hidden>Relayed</span> <span id="rstate" class="pill" hidden></span></span>
+  </div>
+  <div class="grid" id="grid">
+    <div>
+      <div class="tiles n1" id="tiles"></div>
+      <div id="wait" class="waitbox">
+        <p><strong>You're the only one here.</strong> Share this link:</p>
+        <div class="row nogap"><input id="wurl" readonly><button id="wcopy">Copy</button></div>
+      </div>
+      <div class="controls">
+        <button id="cmic" class="toggle" aria-pressed="false">Mute</button>
+        <button id="ccam" class="toggle" aria-pressed="false">Camera off</button>
+        <button id="cshare" aria-pressed="false" class="toggle">Share screen</button>
+        <button id="cchat" aria-pressed="false">Chat</button>
+        <button id="cleave" class="danger">Leave</button>
+      </div>
+    </div>
+    <aside class="chat" id="chat" hidden>
+      <ul id="clog" aria-live="polite"></ul>
+      <form id="cform"><input id="cinput" maxlength="500" placeholder="Message" autocomplete="off"><button class="primary">Send</button></form>
+    </aside>
+  </div>
+</section>
+<script src="/app.js"></script>
+<script src="/room.js"></script>
+</body></html>
