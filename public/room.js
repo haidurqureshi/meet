@@ -6,6 +6,11 @@
   let info = null, join = null, ws = null, localStream = null, screenStream = null;
   let micOn = true, camOn = true, sharing = false, left = false, failures = 0, retryTimer = null, unread = 0;
   const peers = new Map();
+  // "speaker": the others fill the screen and your own camera floats small in a corner (like Zoom).
+  // "gallery": everyone the same size. The choice and the corner are remembered.
+  let view = "speaker", pipCorner = "br";
+  try { view = localStorage.getItem("meet-view") === "gallery" ? "gallery" : "speaker"; pipCorner = localStorage.getItem("meet-pip") || "br"; } catch { /* ignore */ }
+  if (!["tl", "tr", "bl", "br"].includes(pipCorner)) pipCorner = "br";
   // A secret per meeting tab: the server turns it into our id in the room, so a reload keeps our place
   // but nobody else can take it. Only our id (never this key) is shown to the others.
   let pid = "", key = "";
@@ -180,7 +185,12 @@
         $("#tiles").classList.toggle("has-spot", on);
         t.title = on ? "Click to show everyone" : "Click to enlarge";
       };
-      t.onclick = spot;
+      t.onclick = () => {
+        if (t.dataset.dragged) { delete t.dataset.dragged; return; } // that was a drag, not a click
+        if (isSelf && floating()) return;
+        spot();
+      };
+      if (isSelf) makeDraggable(t);
       t.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); spot(); } };
       $("#tiles").append(t);
     }
@@ -236,12 +246,70 @@
     }
   }, 200);
 
+  const floating = () => view === "speaker" && $("#tiles").children.length > 1;
+
   function layout() {
     const n = $("#tiles").children.length;
-    $("#tiles").className = "tiles n" + Math.min(Math.max(n, 1), 4) + ($("#tiles .tile.spot") ? " has-spot" : "");
+    const float = floating();
+    if (float) { const s = $("#tile-self.spot"); if (s) { s.classList.remove("spot"); } }
+    const shown = float ? n - 1 : n; // the floating self view doesn't take a place in the grid
+    $("#tiles").className = "tiles n" + Math.min(Math.max(shown, 1), 4) + ($("#tiles .tile.spot") ? " has-spot" : "") + (float ? " float-self pip-" + pipCorner : "");
+    const self = $("#tile-self");
+    if (self) self.title = float ? "Your camera. Drag it to another corner." : "Click to enlarge";
+    const vb = $("#rview");
+    vb.hidden = n < 2;
+    vb.querySelector("use").setAttribute("href", view === "speaker" ? "#i-gallery" : "#i-speaker");
+    vb.querySelector("span").textContent = view === "speaker" ? "Gallery" : "Speaker";
+    vb.setAttribute("aria-label", view === "speaker" ? "Switch to gallery view" : "Switch to speaker view");
     $("#rcount").textContent = n === 1 ? "1 here" : n + " here";
     $("#wait").hidden = n > 1;
     applyBitrate();
+  }
+
+  function setView(v) {
+    view = v;
+    try { localStorage.setItem("meet-view", v); } catch { /* ignore */ }
+    layout();
+    toast(v === "speaker" ? "Speaker view: your camera is small" : "Gallery view: everyone the same size");
+  }
+  $("#rview").onclick = () => setView(view === "speaker" ? "gallery" : "speaker");
+
+  /** Drag your floating camera; it snaps to the nearest corner when you let go. */
+  function makeDraggable(t) {
+    let start = null;
+    t.addEventListener("pointerdown", (e) => {
+      if (!floating() || e.button !== 0) return;
+      const r = t.getBoundingClientRect();
+      start = { x: e.clientX, y: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, moved: false };
+      t.setPointerCapture(e.pointerId);
+    });
+    t.addEventListener("pointermove", (e) => {
+      if (!start) return;
+      if (!start.moved && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 6) return;
+      start.moved = true;
+      const box = t.parentElement.parentElement.getBoundingClientRect(); // the stage
+      const x = Math.min(Math.max(e.clientX - start.dx - box.left, 0), box.width - t.offsetWidth);
+      const y = Math.min(Math.max(e.clientY - start.dy - box.top, 0), box.height - t.offsetHeight);
+      t.classList.add("dragging");
+      t.style.left = x + "px"; t.style.top = y + "px"; t.style.right = "auto"; t.style.bottom = "auto";
+    });
+    const end = (e) => {
+      if (!start) return;
+      const moved = start.moved;
+      start = null;
+      if (!moved) return;
+      t.dataset.dragged = "1";
+      const box = t.parentElement.parentElement.getBoundingClientRect();
+      const r = t.getBoundingClientRect();
+      const cx = r.left + r.width / 2 - box.left, cy = r.top + r.height / 2 - box.top;
+      pipCorner = (cy < box.height / 2 ? "t" : "b") + (cx < box.width / 2 ? "l" : "r");
+      try { localStorage.setItem("meet-pip", pipCorner); } catch { /* ignore */ }
+      t.classList.remove("dragging");
+      t.style.left = t.style.top = t.style.right = t.style.bottom = "";
+      layout();
+    };
+    t.addEventListener("pointerup", end);
+    t.addEventListener("pointercancel", end);
   }
 
   function applyBitrate() {
@@ -487,6 +555,7 @@
     if (!inCall && !inLobby) return;
     const k = e.key.toLowerCase();
     if (k === "m" && audioTrack()) { e.preventDefault(); toggleMic(); toast(micOn ? "Microphone on" : "Microphone muted"); }
+    else if (k === "g" && inCall && $("#tiles").children.length > 1) { e.preventDefault(); setView(view === "speaker" ? "gallery" : "speaker"); }
     else if (k === "v" && videoTrack()) { e.preventDefault(); toggleCam(); toast(camOn ? "Camera on" : "Camera off"); }
   });
 
