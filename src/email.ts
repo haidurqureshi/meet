@@ -17,7 +17,7 @@ export async function sendEmail(env: Env, msg: Mail): Promise<boolean> {
   }
 }
 
-export const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+export const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
 function layout(app: string, heading: string, body: string): string {
   return `<!doctype html><html><body style="margin:0;background:#F7F2ED;font-family:Arial,Helvetica,sans-serif;color:#171717;">

@@ -4,7 +4,8 @@
   const msg = $("#msg");
   const busy = (form, on) => form.querySelectorAll("button").forEach((b) => (b.disabled = on));
   const page = document.body.dataset.page;
-  const next = () => { const n = new URLSearchParams(location.search).get("next"); return n && /^\/[A-Za-z0-9/_-]*$/.test(n) ? n : "/dashboard"; };
+  // Only a path on this site: "//host" or "/\\host" would leave it, so the second character can't be a slash.
+  const next = () => { const n = new URLSearchParams(location.search).get("next"); return n && /^\/(?:[A-Za-z0-9_-][A-Za-z0-9/_-]*)?$/.test(n) && !n.includes("//") ? n : "/dashboard"; };
 
   boot().then((d) => { if (d.user && (page === "login" || page === "signup")) location.replace(next()); });
 

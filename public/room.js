@@ -2,12 +2,14 @@
 (function () {
   const { $, api, show } = App;
   const code = (/^\/m\/([a-z2-9]{12})$/.exec(location.pathname) || [])[1];
-  const pidKey = "meet-pid-" + code;
+  const keyName = "meet-key-" + code;
   let info = null, join = null, ws = null, localStream = null, screenStream = null;
   let micOn = true, camOn = true, sharing = false, left = false, everOpen = false, failures = 0, retryTimer = null;
   const peers = new Map();
-  let pid = "";
-  try { pid = sessionStorage.getItem(pidKey) || ""; } catch { /* storage blocked */ }
+  // A secret per meeting tab: the server turns it into our id in the room, so a reload keeps our place
+  // but nobody else can take it. Only our id (never this key) is shown to the others.
+  let pid = "", key = "";
+  try { key = sessionStorage.getItem(keyName) || ""; } catch { /* storage blocked */ }
 
   const panel = (id) => ["notice", "lobby", "room"].forEach((p) => ($("#" + p).hidden = p !== id));
   function notice(title, text, retry) {
@@ -98,11 +100,12 @@
   };
 
   async function fetchJoin(name) {
-    const r = await api("/api/join", { room: code, name, pid });
+    const r = await api("/api/join", { room: code, name, key });
     if (!r.ok) { show($("#lmsg"), "error", r.data.error || "Couldn't join."); if (r.status === 410 || r.status === 403) notice("Can't join", r.data.error); return false; }
     join = r.data;
     pid = join.pid;
-    try { sessionStorage.setItem(pidKey, pid); } catch { /* ignore */ }
+    key = join.key;
+    try { sessionStorage.setItem(keyName, key); } catch { /* ignore */ }
     join.name = name;
     return true;
   }

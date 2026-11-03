@@ -48,6 +48,13 @@
   const subscribe = () => redirectTo("/api/billing/checkout");
   const portal = () => redirectTo("/api/billing/portal");
 
+  $("#personalRotate").onclick = async () => {
+    if (!confirm("Get a new personal room link? The current link will stop working for everyone.")) return;
+    const r = await api("/api/personal-room/rotate", {});
+    if (r.ok) { user.personalRoom = r.data.personalRoom; renderUser(); show($("#imsg"), "ok", "Done. Your personal room has a new link."); }
+    else show($("#imsg"), "error", r.data.error || "Something went wrong.");
+  };
+
   $("#resend").onclick = async () => {
     const r = await api("/api/verify/resend", {});
     $("#vmsg").textContent = r.ok ? "Sent. Check your inbox (and spam)." : r.data.error;

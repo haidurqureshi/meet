@@ -30,8 +30,16 @@ export async function sha256Hex(s: string): Promise<string> {
 }
 
 const ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"; // no look-alike characters
+/** Uniformly random id from ALPHABET (rejection sampling, so no character is more likely than another). */
 export function randomId(length: number): string {
-  return [...crypto.getRandomValues(new Uint8Array(length))].map((b) => ALPHABET[b % ALPHABET.length]).join("");
+  const limit = 256 - (256 % ALPHABET.length);
+  let out = "";
+  while (out.length < length) {
+    for (const b of crypto.getRandomValues(new Uint8Array(length * 2))) {
+      if (b < limit && out.length < length) out += ALPHABET[b % ALPHABET.length];
+    }
+  }
+  return out;
 }
 export function randomToken(): string {
   return toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
@@ -56,7 +64,13 @@ export async function hashPassword(password: string): Promise<string> {
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [scheme, iter, salt, hash] = stored.split("$");
   if (scheme !== "pbkdf2" || !iter || !salt || !hash) return false;
-  return safeEqual(b64(await derive(password, unb64(salt), Number(iter))), hash);
+  const n = Number(iter);
+  if (!Number.isInteger(n) || n < 1 || n > ITERATIONS) return false;
+  try {
+    return safeEqual(b64(await derive(password, unb64(salt), n)), hash);
+  } catch {
+    return false;
+  }
 }
 
 /** Burns the same time as a real check, so unknown emails can't be told apart by speed. */
@@ -89,6 +103,15 @@ export async function readSession(secret: string, value: string | undefined): Pr
 }
 
 export const passwordFingerprint = fingerprint;
+
+/**
+ * A participant's id in a room, derived from a secret only their browser knows. Other people in the meeting
+ * see the id, but can't use it to take over that person's place (which would disconnect them and divert
+ * the messages meant for them).
+ */
+export async function participantId(secret: string, room: string, deviceKey: string): Promise<string> {
+  return (await hmacHex(secret, `pid:${room}:${deviceKey}`)).slice(0, 24);
+}
 
 /* ---------- meeting join tokens (checked when a browser opens the room's WebSocket) ---------- */
 

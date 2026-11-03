@@ -1,6 +1,7 @@
 export async function isLimited(db: D1Database, key: string, max: number, windowMs: number): Promise<boolean> {
   const since = Date.now() - windowMs;
-  await db.prepare("DELETE FROM rate_limits WHERE ts < ?1").bind(Date.now() - 48 * 3600_000).run();
+  // Tidy up old rows now and then rather than on every request.
+  if (Math.random() < 0.05) await db.prepare("DELETE FROM rate_limits WHERE ts < ?1").bind(Date.now() - 48 * 3600_000).run();
   const row = await db
     .prepare("SELECT COUNT(*) AS n FROM rate_limits WHERE key = ?1 AND ts >= ?2")
     .bind(key, since)

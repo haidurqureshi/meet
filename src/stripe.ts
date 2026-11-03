@@ -1,3 +1,4 @@
+import { hmacHex, safeEqual } from "./crypto";
 import type { Env } from "./env";
 
 // Minimal Stripe client using fetch (no SDK needed on Cloudflare Workers).
@@ -12,6 +13,7 @@ async function stripe<T>(secret: string, path: string, body?: URLSearchParams, i
       ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
     },
     body,
+    signal: AbortSignal.timeout(10_000),
   });
   const json = (await res.json()) as T & { error?: { message?: string } };
   if (!res.ok) throw new Error(json.error?.message ?? `Stripe error ${res.status}`);
@@ -95,17 +97,9 @@ export async function verifyWebhook(rawBody: string, header: string | null, secr
   const t = parts.find(([k]) => k === "t")?.[1];
   const sigs = parts.filter(([k]) => k === "v1").map(([, v]) => v);
   if (!t || sigs.length === 0) return null;
-  if (Math.abs(Date.now() / 1000 - Number(t)) > 300) return null;
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${t}.${rawBody}`));
-  const expected = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  const ok = sigs.some((s) => {
-    if (s.length !== expected.length) return false;
-    let diff = 0;
-    for (let i = 0; i < s.length; i++) diff |= s.charCodeAt(i) ^ expected.charCodeAt(i);
-    return diff === 0;
-  });
-  if (!ok) return null;
+  if (!/^\d+$/.test(t) || Math.abs(Date.now() / 1000 - Number(t)) > 300) return null;
+  const expected = await hmacHex(secret, `${t}.${rawBody}`);
+  if (!sigs.some((s) => safeEqual(s, expected))) return null;
   try {
     return JSON.parse(rawBody) as StripeEvent;
   } catch {

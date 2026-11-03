@@ -23,6 +23,10 @@ screen sharing and chat. Nothing is recorded.
 - **Meetings:** each host has a **personal room** (a permanent link), can start an **instant meeting**, or **schedule** one
   and send **email invitations** (up to 10 at a time, 30 a day; the host must have confirmed their email first).
   A scheduled room opens 15 minutes before the start and closes an hour after it is due to end. The host can enter early.
+- **Security:** a strict Content-Security-Policy (only this site's own scripts), HSTS, no framing, and API calls must
+  come from this site's own pages as JSON. Emailed links work once. Each person's place in a meeting is tied to a secret
+  their browser holds, so others in the call can't take it over. The room server limits how fast anyone can send messages.
+  A host can replace their personal room link from the dashboard if it has been shared too widely.
 - **Video:** WebRTC mesh: everyone connects to everyone, so 4 people means 3 connections each. **All media is relayed
   through Cloudflare TURN**, so nobody sees anyone's IP address and every call takes the same path. A small Durable
   Object per meeting (`src/room.ts`) only passes the "find each other" messages and chat. Bitrate is lowered
@@ -94,7 +98,7 @@ npm run dev                        # http://localhost:8787
 
 In `.dev.vars`: `RTC_ALLOW_DIRECT=1` lets calls connect without a TURN key; `DEV_SKIP_BILLING=1` treats every account as
 subscribed so you can try meetings without Stripe; `EMAIL_DEV_LOG=1` prints emails to the console.
-**Never set these three in production.** `npm run typecheck` checks the code.
+They only take effect under `wrangler dev` (they're ignored on Cloudflare), but still don't set them in production. `npm run typecheck` checks the code.
 
 ## Limits
 

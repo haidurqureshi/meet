@@ -4,6 +4,7 @@ import {
   fakeVerify,
   hashPassword,
   makeSession,
+  participantId,
   passwordFingerprint,
   randomId,
   randomToken,
@@ -63,6 +64,7 @@ function readCookie(req: Request, name: string): string | undefined {
 
 async function body(req: Request): Promise<Record<string, unknown>> {
   try {
+    if (Number(req.headers.get("Content-Length") ?? 0) > 20_000) return {};
     const text = await req.text();
     if (text.length > 20_000) return {};
     const v = JSON.parse(text);
@@ -122,11 +124,12 @@ async function issueToken(db: D1Database, userId: number, kind: "reset" | "verif
   return token;
 }
 
+/** Uses up a one-time emailed token. Deleting and reading in one statement means a link can only ever work once. */
 async function takeToken(db: D1Database, token: string, kind: "reset" | "verify"): Promise<number | null> {
   if (!/^[A-Za-z0-9_-]{20,100}$/.test(token)) return null;
   const hash = await sha256Hex(token);
   const row = await db
-    .prepare("SELECT user_id, expires_at FROM email_tokens WHERE token_hash = ?1 AND kind = ?2")
+    .prepare("DELETE FROM email_tokens WHERE token_hash = ?1 AND kind = ?2 RETURNING user_id, expires_at")
     .bind(hash, kind)
     .first<{ user_id: number; expires_at: number }>();
   if (!row || row.expires_at < Date.now()) return null;
@@ -278,6 +281,7 @@ async function resetPassword(c: Ctx): Promise<Response> {
     db.prepare("UPDATE users SET password_hash = ?1, email_verified = 1 WHERE id = ?2").bind(hash, u.id),
     db.prepare("DELETE FROM email_tokens WHERE user_id = ?1").bind(u.id),
   ]);
+  await clearHits(db, `login:email:${u.email}`);
   c.wait(sendEmail(c.env, passwordChangedEmail(c.env.APP_NAME, u.email, u.name)));
   return json({ ok: true }, 200, { "Set-Cookie": setSession(c.url, await makeSession(c.env.SESSION_SECRET, u.id, hash), SESSION_S) });
 }
@@ -382,7 +386,9 @@ async function stripeWebhook(c: Ctx): Promise<Response> {
         await syncSubscription(c.env, userId, await retrieveSubscription(c.env, obj.subscription));
       }
     } else if (event.type.startsWith("customer.subscription.")) {
-      const sub = obj as unknown as StripeSubscription;
+      let sub = obj as unknown as StripeSubscription;
+      // Stripe doesn't promise events arrive in order, so read the subscription as it is right now.
+      if (c.env.STRIPE_SECRET_KEY && typeof sub.id === "string") sub = await retrieveSubscription(c.env, sub.id);
       let userId = Number(sub.metadata?.user_id);
       if (!Number.isInteger(userId) || userId <= 0) {
         const r = await db.prepare("SELECT id FROM users WHERE stripe_customer_id = ?1").bind(sub.customer).first<{ id: number }>();
@@ -535,6 +541,23 @@ async function deleteMeeting(c: Ctx, u: UserRow, id: string): Promise<Response> 
   return json({ ok: true });
 }
 
+/** Gives the host a new personal room link. The old one stops working straight away (use if it was shared too widely). */
+async function rotatePersonalRoom(c: Ctx, u: UserRow): Promise<Response> {
+  const key = `rotate:${u.id}`;
+  if (await isLimited(c.env.DB, key, 10, 24 * 3600_000)) return fail("You've changed your link a lot today. Please try again tomorrow.", 429);
+  await recordHit(c.env.DB, key);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const id = randomId(12);
+    try {
+      await c.env.DB.prepare("UPDATE users SET personal_room = ?1 WHERE id = ?2").bind(id, u.id).run();
+      return json({ personalRoom: id, url: meetingUrl(c, id) });
+    } catch (err) {
+      if (!/UNIQUE/i.test(String(err))) throw err;
+    }
+  }
+  return fail("Sorry, that didn't work. Please try again.", 500);
+}
+
 /* ---------- joining a meeting ---------- */
 
 type Room = { title: string; hostName: string; ownerId: number; owner: Pick<UserRow, "sub_status">; personal: boolean; startsAt: number | null; durationMin: number | null };
@@ -590,21 +613,33 @@ async function joinRoom(c: Ctx): Promise<Response> {
   if (status === "early") return fail("This meeting hasn't opened yet. It opens 15 minutes before the start time.", 403);
   if (status === "over") return fail("This meeting has finished.", 410);
 
-  const pid = typeof b.pid === "string" && /^[A-Za-z0-9_-]{8,40}$/.test(b.pid) ? b.pid : randomId(16);
-  const name = str(b.name, 40).replace(/[<>]/g, "") || me?.name || "Guest";
+  // The browser keeps a secret key per meeting; its id in the room is derived from it, so nobody else can claim that id.
+  const deviceKey = typeof b.key === "string" && /^[A-Za-z0-9_-]{22,64}$/.test(b.key) ? b.key : randomToken();
+  const pid = await participantId(c.env.SESSION_SECRET, id, deviceKey);
+  const name = str(b.name, 40).replace(/[<>]/g, "").replace(/\(host\)/gi, "").trim() || me?.name || "Guest";
   const lifetimeMs = 6 * 3600_000;
   const ice = await getIce(c.env, lifetimeMs / 1000);
   if (!ice) return fail("Video isn't switched on yet: the Cloudflare TURN key is missing or isn't working.", 503);
   const token = await signJoin(c.env.SESSION_SECRET, { room: id, pid, name, host: isHost, exp: Date.now() + lifetimeMs });
-  return json({ token, pid, isHost, iceServers: ice.iceServers, relayOnly: ice.relayOnly, appName: c.env.APP_NAME });
+  return json({ token, pid, key: deviceKey, isHost, iceServers: ice.iceServers, relayOnly: ice.relayOnly, appName: c.env.APP_NAME });
 }
 
 /* ---------- router ---------- */
 
-function sameOrigin(req: Request, url: URL): boolean {
+/** True when the Origin header is missing or is this site. A malformed Origin (e.g. "null") is never trusted. */
+export function sameOrigin(req: Request, url: URL): boolean {
+  if (req.headers.get("Sec-Fetch-Site") === "cross-site") return false;
   const origin = req.headers.get("Origin");
-  return !origin || new URL(origin).host === url.host;
+  if (origin === null) return true;
+  try {
+    return new URL(origin).origin === url.origin;
+  } catch {
+    return false;
+  }
 }
+
+/** Browser API calls always send JSON. Requiring it means a plain cross-site form can't post to the API. */
+const isJson = (req: Request) => (req.headers.get("Content-Type") ?? "").split(";")[0].trim().toLowerCase() === "application/json";
 
 export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Promise<unknown>) => void): Promise<Response> {
   const c: Ctx = { req, env, url, wait };
@@ -612,7 +647,7 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   const post = req.method === "POST";
 
   if (path === "/api/stripe/webhook" && post) return stripeWebhook(c); // signed by Stripe, not a browser
-  if (post && !sameOrigin(req, url)) return fail("Forbidden", 403);
+  if (post && (!sameOrigin(req, url) || !isJson(req))) return fail("Forbidden", 403);
   if (!env.SESSION_SECRET) return fail("Not set up yet: the SESSION_SECRET secret is missing.", 503);
 
   // public
@@ -638,6 +673,7 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   if (path === "/api/billing/checkout" && post) return checkout(c, u);
   if (path === "/api/billing/confirm" && post) return confirmCheckout(c, u);
   if (path === "/api/billing/portal" && post) return portal(c, u);
+  if (path === "/api/personal-room/rotate" && post) return rotatePersonalRoom(c, u);
   if (path === "/api/meetings" && req.method === "GET") return listMeetings(c, u);
   if (path === "/api/meetings" && post) return createMeeting(c, u);
   const inv = /^\/api\/meetings\/([a-z2-9]{12})\/invite$/.exec(path);
