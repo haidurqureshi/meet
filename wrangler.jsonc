@@ -23,7 +23,7 @@
     // OPTIONAL: a Stripe recurring Price ID (price_...). If set it overrides PRICE_PENCE. Leave "" to charge PRICE_PENCE.
     "STRIPE_PRICE_ID": "",
     // Must be an address on a domain onboarded for Email Sending.
-    "EMAIL_FROM": "no-reply@known.org.uk",
+    "EMAIL_FROM": "no-reply@meet.haidurqureshi.com",
     // Cloudflare Realtime TURN key ID (dashboard -> Realtime -> TURN). Not secret.
     "TURN_KEY_ID": "c801e53dd0f27d607d58e376c42bbd98",
 

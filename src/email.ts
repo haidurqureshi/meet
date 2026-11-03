@@ -4,7 +4,7 @@ export type Mail = { to: string; subject: string; text: string; html: string };
 
 /** Never throws. Returns true if Cloudflare accepted the message. */
 export async function sendEmail(env: Env, msg: Mail): Promise<boolean> {
-  const from = env.EMAIL_FROM || "no-reply@known.org.uk";
+  const from = env.EMAIL_FROM || "no-reply@meet.haidurqureshi.com";
   if (env.EMAIL_DEV_LOG === "1") console.log(`[email:dev] to=${msg.to} subject=${msg.subject}\n${msg.text}`);
   try {
     if (!env.EMAIL) throw new Error("EMAIL binding is not configured");
