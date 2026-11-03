@@ -1,21 +1,23 @@
 <!doctype html>
 <html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Sign up</title><meta name="robots" content="noindex"><link rel="stylesheet" href="/style.css"></head>
+<title>Sign up</title><meta name="robots" content="noindex"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"></head>
 <body data-page="signup">
 <header class="top"><a class="brand" href="/" data-app>Meet</a><nav id="nav"></nav></header>
 <main class="card">
 <h1>Create your account</h1>
 <p class="muted">Free to sign up. Hosting meetings is <strong data-price></strong>. Joining someone else's meeting is always free and needs no account.</p>
 <form novalidate>
-<label>Your name<input name="name" autocomplete="name" maxlength="80" required></label>
-<label>Email<input name="email" type="email" autocomplete="email" required></label>
-<label>Password <span class="muted">(8 or more characters)</span><input name="password" type="password" autocomplete="new-password" minlength="8" required></label>
+<label>Your name<input name="name" autocomplete="name" maxlength="80" required autofocus></label>
+<label>Email<input name="email" type="email" autocomplete="email" inputmode="email" required></label>
+<label>Password<input name="password" type="password" autocomplete="new-password" minlength="8" required aria-describedby="pwhint"><span class="hint" id="pwhint">At least 8 characters.</span></label>
 <label>Repeat password<input name="password2" type="password" autocomplete="new-password" required></label>
 <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
-<label class="check"><input type="checkbox" name="consent" required> <span>I accept the <a href="/legal" target="_blank">terms and privacy notice</a>.</span></label>
+<label class="check"><input type="checkbox" name="consent" required> <span>I accept the <a href="/legal" target="_blank" rel="noopener">terms and privacy notice</a>.</span></label>
 <div id="msg" hidden></div>
-<div class="row"><button class="primary">Create account</button><a href="/login">I already have an account</a></div>
-</form></main>
+<div class="row"><button class="primary big">Create account</button></div>
+</form>
+<p class="alt">Already have an account? <a href="/login" data-keep-next>Log in</a></p>
+</main>
 <script src="/app.js"></script>
 <script src="/auth.js"></script>
 </body></html>
