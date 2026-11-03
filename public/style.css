@@ -231,3 +231,16 @@ body.in-call { background: var(--call-bg); color: var(--call-ink); overflow: hid
 .top nav .btn { min-height: 2.3rem; padding: 0 .9rem; }
 body.in-call .toast { bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
 @media (prefers-color-scheme: dark) { .toast { background: #f4f4f5; color: #111; } }
+
+/* speaker view: your own camera floats small over the others */
+.tiles.float-self #tile-self { position: absolute; z-index: 3; width: clamp(8rem, 22%, 15rem); height: auto; aspect-ratio: 16/9; cursor: grab; touch-action: none; box-shadow: 0 6px 24px #0009; border: 2px solid #ffffff26; transition: left .2s, top .2s, right .2s, bottom .2s; }
+.tiles.float-self #tile-self.dragging { cursor: grabbing; transition: none; opacity: .9; }
+.tiles.float-self.pip-br #tile-self { right: .75rem; bottom: .75rem; }
+.tiles.float-self.pip-bl #tile-self { left: .75rem; bottom: .75rem; }
+.tiles.float-self.pip-tr #tile-self { right: .75rem; top: .75rem; }
+.tiles.float-self.pip-tl #tile-self { left: .75rem; top: .75rem; }
+.tiles.float-self.has-spot #tile-self { display: block; }
+.tiles.float-self #tile-self .cap { font-size: .7rem; padding: .1rem .45rem; left: .35rem; bottom: .35rem; }
+.tiles.float-self #tile-self .avatar span { width: 2.75rem; font-size: 1.1rem; }
+@media (max-aspect-ratio: 1/1) { .tiles.float-self #tile-self { width: clamp(6rem, 30%, 9rem); aspect-ratio: 3/4; } }
+@media (max-width: 480px) { .bar button span { display: none; } .bar button { padding: 0 .6rem; } }

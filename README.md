@@ -28,7 +28,8 @@ screen sharing and chat. Nothing is recorded.
   their browser holds, so others in the call can't take it over. The room server limits how fast anyone can send messages.
   A host can replace their personal room link from the dashboard if it has been shared too widely.
 - **In a call:** a full-screen dark call view with icon controls (M mutes, V turns the camera on or off). Everyone
-  can see who is muted, who has their camera off (their initials are shown instead) and who is speaking. Click a
+  can see who is muted, who has their camera off (their initials are shown instead) and who is speaking. Speaker view (the default) shows the others big and
+  your own camera small in a corner you can drag it to; the View button or G switches to an equal-sized gallery. Click a
   tile to make it big. Chat opens as a side panel (a drawer on phones) with an unread count.
 - **Video:** WebRTC mesh: everyone connects to everyone, so 4 people means 3 connections each. **All media is relayed
   through Cloudflare TURN**, so nobody sees anyone's IP address and every call takes the same path. A small Durable
