@@ -248,3 +248,22 @@ body.in-call .toast { bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
 /* more than 4 people (RealtimeKit calls): a scrolling grid */
 .tiles.nmany { grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); grid-template-rows: none; grid-auto-rows: minmax(9rem, 1fr); overflow-y: auto; align-content: start; }
 @media (min-width: 1100px) { .tiles.nmany { grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); } }
+
+/* people and permissions */
+.people .phint { margin: 0 0 .6rem; font-size: .8rem; color: #a1a1aa; }
+.plist { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.prow { padding: .6rem 0; border-top: 1px solid #ffffff14; }
+.plist .prow:first-child { border-top: 0; }
+.prow.pall { border: 0; margin-bottom: .4rem; padding: .6rem .7rem; background: var(--call-ctl); border-radius: 10px; }
+.prow .pname { display: flex; align-items: baseline; gap: .4rem; font-weight: 600; font-size: .9rem; overflow: hidden; }
+.prow .pname span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prow .pname small { color: #a1a1aa; font-weight: 400; flex: none; }
+.pperms { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
+.pperm { min-height: 2rem; padding: 0 .6rem; gap: .3rem; font-size: .75rem; font-weight: 600; border-radius: 999px; background: var(--call-ctl); color: var(--call-ink); border: 1px solid #ffffff1f; }
+.pperm .icon { width: .95rem; height: .95rem; }
+.pperm[aria-pressed="false"] { background: #3b1212; color: #fecaca; border-color: #7f1d1d; text-decoration: line-through; }
+.pnote { margin-top: .3rem; font-size: .75rem; color: #fca5a5; }
+@media (hover: hover) { .pperm:hover:not(:disabled) { background: var(--call-ctl-hover); } .pperm[aria-pressed="false"]:hover:not(:disabled) { background: #4c1717; } }
+.ctl.locked { opacity: .55; }
+.ctl.locked::after { content: ""; position: absolute; top: .3rem; right: .4rem; width: .75rem; height: .75rem; background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'%3E%3Crect x='4' y='11' width='16' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round'%3E%3Crect x='4' y='11' width='16' height='10' rx='2'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E") center / contain no-repeat; }
+.bar button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }

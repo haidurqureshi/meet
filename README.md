@@ -31,6 +31,11 @@ RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing i
   can see who is muted, who has their camera off (their initials are shown instead) and who is speaking. Speaker view (the default) shows the others big and
   your own camera small in a corner you can drag it to; the View button or G switches to an equal-sized gallery. Click a
   tile to make it big. Chat opens as a side panel (a drawer on phones) with an unread count.
+- **Permissions:** in a call, the host opens **People** to allow or stop each person's mic, camera, screen share and
+  chat, or set it for everyone (e.g. "only the host shares their screen"). The room server keeps the permissions and only
+  accepts changes from the host. Chat is blocked on the server. For mic, camera and screen share, the person's own
+  buttons are switched off and locked, and everyone else's page stops playing that person's sound or video, so a modified
+  page can't get round it. "Everyone" settings are kept for the room; per-person ones are forgotten once everyone leaves.
 - **Video:** WebRTC mesh: everyone connects to everyone, so 4 people means 3 connections each. **All media is relayed
   through Cloudflare TURN**, so nobody sees anyone's IP address and every call takes the same path. A small Durable
   Object per meeting (`src/room.ts`) only passes the "find each other" messages and chat. Bitrate is lowered
