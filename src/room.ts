@@ -14,12 +14,22 @@ import { addRtkParticipant, createRtkMeeting, rtkConfigured, rtkMax } from "./re
 //
 // To the browser:  {type:"joined", you, peers:[{id,name,host}], mode}  {type:"peer-joined", id, name, host}
 //                  {type:"peer-left", id}  {type:"signal", from, data}  {type:"chat", from, name, text}  {type:"full"}
-//                  {type:"upgrade"}
+//                  {type:"upgrade"}  {type:"roster", defaults, people:[{id,name,host,allow}]}  {type:"denied", perm}
 // From the browser: {type:"signal", to, data}  {type:"chat", text}
+//                   {type:"perm", target: <id>|"*", perm: "mic"|"cam"|"share"|"chat", allow} (host only)
+//
+// Permissions: the host can allow or stop each person's mic, camera, screen share and chat, or set the default for
+// everyone ("*"). The host is never restricted. Chat is enforced here; for media, the person's own page switches it
+// off and everyone else's page stops playing it. Room defaults are kept between calls; per-person choices are
+// forgotten once everyone has left.
 // From the Worker:  POST https://room/rtk-token {pid, name, host, title} -> {token} (only once the room has switched)
 
 const MAX = 4;
 type Mode = "mesh" | "rtk";
+const PERMS = ["mic", "cam", "share", "chat"] as const;
+type Perm = (typeof PERMS)[number];
+type Allow = Record<Perm, boolean>;
+const ALL_ALLOWED: Allow = { mic: true, cam: true, share: true, chat: true };
 // Flood protection per connection: a burst of up to BURST messages, refilling at RATE per second.
 // Setting up a call sends a few dozen ICE candidates at once, so this is generous for real use.
 const BURST = 200;
@@ -84,6 +94,53 @@ export class RoomDO extends DurableObject<Env> {
     }
   }
 
+  /* ---------- permissions ---------- */
+  private async permDefaults(): Promise<Allow> {
+    return { ...ALL_ALLOWED, ...((await this.ctx.storage.get<Partial<Allow>>("permDefaults")) ?? {}) };
+  }
+  private async permPeople(): Promise<Record<string, Partial<Allow>>> {
+    return (await this.ctx.storage.get<Record<string, Partial<Allow>>>("permPeople")) ?? {};
+  }
+  private async allowed(who: Who, perm: Perm): Promise<boolean> {
+    if (who.host) return true;
+    const people = await this.permPeople();
+    return people[who.pid]?.[perm] ?? (await this.permDefaults())[perm];
+  }
+
+  /** Who is here and what each person may do, sent to everyone whenever it changes. */
+  private async sendRoster(): Promise<void> {
+    const defaults = await this.permDefaults();
+    const people = await this.permPeople();
+    const seen = new Set<string>();
+    const list: { id: string; name: string; host: boolean; allow: Allow }[] = [];
+    for (const w of this.open()) {
+      const p = this.who(w);
+      if (!p || seen.has(p.pid)) continue;
+      seen.add(p.pid);
+      list.push({ id: p.pid, name: p.name, host: p.host, allow: p.host ? ALL_ALLOWED : { ...defaults, ...(people[p.pid] ?? {}) } });
+    }
+    const out = JSON.stringify({ type: "roster", defaults, people: list });
+    for (const w of this.open()) w.send(out);
+  }
+
+  private async setPerm(target: string, perm: Perm, allow: boolean): Promise<void> {
+    const people = await this.permPeople();
+    if (target === "*") {
+      // A room-wide choice replaces any per-person choice for that permission.
+      await this.ctx.storage.put("permDefaults", { ...(await this.permDefaults()), [perm]: allow });
+      for (const id of Object.keys(people)) {
+        delete people[id][perm];
+        if (!Object.keys(people[id]).length) delete people[id];
+      }
+    } else {
+      const t = this.ctx.getWebSockets(target).map((w) => this.who(w)).find(Boolean);
+      if (!t || t.host) return; // only people who are here, and never the host
+      people[target] = { ...(people[target] ?? {}), [perm]: allow };
+    }
+    await this.ctx.storage.put("permPeople", people);
+    await this.sendRoster();
+  }
+
   private open(): WebSocket[] {
     return this.ctx.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN);
   }
@@ -138,15 +195,16 @@ export class RoomDO extends DurableObject<Env> {
     });
     server.send(JSON.stringify({ type: "joined", you: pid, peers, mode }));
     for (const o of others) o.send(JSON.stringify({ type: "peer-joined", id: pid, name, host }));
+    await this.sendRoster();
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (typeof message !== "string" || message.length > 20_000) return;
     const me = this.who(ws);
     if (!me) return;
-    let msg: { type?: string; to?: unknown; data?: unknown; text?: unknown };
+    let msg: { type?: string; to?: unknown; data?: unknown; text?: unknown; target?: unknown; perm?: unknown; allow?: unknown };
     try {
       msg = JSON.parse(message);
     } catch {
@@ -158,7 +216,15 @@ export class RoomDO extends DurableObject<Env> {
     if (msg.type === "signal" && typeof msg.to === "string" && msg.to !== me.pid && msg.data && typeof msg.data === "object") {
       const out = JSON.stringify({ type: "signal", from: me.pid, data: msg.data });
       for (const w of this.ctx.getWebSockets(msg.to)) if (w.readyState === WebSocket.OPEN) w.send(out);
+    } else if (msg.type === "perm") {
+      if (!me.host) return;
+      if (typeof msg.target !== "string" || typeof msg.allow !== "boolean" || !PERMS.includes(msg.perm as Perm)) return;
+      await this.setPerm(msg.target, msg.perm as Perm, msg.allow);
     } else if (msg.type === "chat" && typeof msg.text === "string") {
+      if (!(await this.allowed(me, "chat"))) {
+        ws.send(JSON.stringify({ type: "denied", perm: "chat" }));
+        return;
+      }
       const text = msg.text.trim().slice(0, 500);
       if (!text) return;
       const out = JSON.stringify({ type: "chat", from: me.pid, name: me.name, text });
@@ -184,8 +250,9 @@ export class RoomDO extends DurableObject<Env> {
     // A replaced connection (same person already back) shouldn't announce that they left.
     if (this.open().some((w) => this.who(w)?.pid === me.pid)) return;
     for (const w of this.open()) w.send(JSON.stringify({ type: "peer-left", id: me.pid }));
+    if (this.open().length) await this.sendRoster();
     // Everyone has gone: the next call in this room starts as a direct (mesh) call again.
     // The RealtimeKit meeting id is kept, so a later large call reuses the same meeting.
-    if (this.open().length === 0) await this.ctx.storage.delete("mode");
+    if (this.open().length === 0) await this.ctx.storage.delete(["mode", "permPeople"]);
   }
 }

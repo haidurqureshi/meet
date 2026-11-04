@@ -11,6 +11,10 @@
   // stays open for chat and the people count.
   let rtk = null, rtkDevices = { mic: false, cam: false }, upgrading = null;
   const names = new Map(); // who is here, from the room server (used for join/leave messages)
+  // What each person may do, set by the host and sent by the room server ("roster").
+  const ALL = { mic: true, cam: true, share: true, chat: true };
+  let roster = { defaults: { ...ALL }, people: [] }, myAllow = { ...ALL }, rosterSeen = false;
+  const amHost = () => !!(join && join.isHost);
   // "speaker": the others fill the screen and your own camera floats small in a corner (like Zoom).
   // "gallery": everyone the same size. The choice and the corner are remembered.
   let view = "speaker", pipCorner = "br";
@@ -93,7 +97,10 @@
     const a = hasMic(), v = hasCam();
     for (const [id, on, onText, offText, has] of [["lmic", micOn, "Mute", "Unmute", a], ["cmic", micOn, "Mute", "Unmute", a], ["lcam", camOn, "Stop video", "Start video", v], ["ccam", camOn, "Stop video", "Start video", v]]) {
       const b = $("#" + id);
-      b.disabled = !has;
+      const ok = id.endsWith("mic") ? myAllow.mic : myAllow.cam;
+      b.disabled = !has || (!ok && !on);
+      b.classList.toggle("locked", has && !ok);
+      b.title = has && !ok ? "The host has turned this off for you" : id.endsWith("mic") ? "Microphone (M)" : "Camera (V)";
       b.setAttribute("aria-pressed", String(!on || !has));
       b.querySelector(".lbl").textContent = !has ? (id.endsWith("mic") ? "No mic" : "No camera") : on ? onText : offText;
     }
@@ -106,6 +113,9 @@
     $("#cshare").hidden = !canShare; // phones can't share their screen
     $("#cshare").querySelector(".lbl").textContent = sharing ? "Stop share" : "Share";
     $("#cshare").setAttribute("aria-pressed", String(sharing));
+    $("#cshare").disabled = !myAllow.share && !sharing;
+    $("#cshare").classList.toggle("locked", !myAllow.share);
+    $("#cshare").title = myAllow.share ? "Share your screen" : "The host has turned off screen sharing for you";
     const self = $("#tile-self");
     if (self) {
       self.querySelector("video").classList.toggle("mirror", !sharing);
@@ -125,8 +135,8 @@
     micOn = !!rtk.self.audioEnabled; camOn = !!rtk.self.videoEnabled;
     syncButtons();
   }
-  const toggleMic = () => { micOn = !micOn; if (rtk) return rtkSet("mic", micOn); syncButtons(); broadcastState(); };
-  const toggleCam = () => { camOn = !camOn; if (rtk) return rtkSet("cam", camOn); syncButtons(); broadcastState(); };
+  const toggleMic = () => { if (!micOn && !myAllow.mic) return toast("The host has turned off your microphone"); micOn = !micOn; if (rtk) return rtkSet("mic", micOn); syncButtons(); broadcastState(); };
+  const toggleCam = () => { if (!camOn && !myAllow.cam) return toast("The host has turned off your camera"); camOn = !camOn; if (rtk) return rtkSet("cam", camOn); syncButtons(); broadcastState(); };
   $("#lmic").onclick = $("#cmic").onclick = toggleMic;
   $("#lcam").onclick = $("#ccam").onclick = toggleCam;
 
@@ -225,13 +235,36 @@
   }
 
   function setTileState(t, state) {
-    if (typeof state.mic === "boolean") t.querySelector(".muted-icon").style.display = state.mic ? "none" : "";
-    if (typeof state.cam === "boolean") {
-      t.querySelector(".avatar").hidden = state.cam;
-      t.querySelector("video").style.visibility = state.cam ? "" : "hidden";
-    }
+    if (typeof state.mic === "boolean") t.dataset.mic = state.mic ? "1" : "0";
+    if (typeof state.cam === "boolean") t.dataset.cam = state.cam ? "1" : "0";
     // A shared screen is shown whole; faces fill the tile.
     if (typeof state.share === "boolean") t.classList.toggle("sharing", state.share);
+    refreshTile(t);
+  }
+
+  /** What a tile's person may do: from the roster, or the room defaults if they're not in it yet. */
+  function allowFor(t) {
+    if (t.id === "tile-self") return ALL; // your own preview always shows
+    const p = roster.people.find((x) => x.id === t.dataset.pid);
+    if (p) return p.allow;
+    return t.dataset.host === "1" ? ALL : roster.defaults;
+  }
+
+  /** Shows a tile's video and plays its sound only if the person has it on AND the host allows it. */
+  function refreshTile(t) {
+    const a = allowFor(t);
+    const sharing = t.classList.contains("sharing");
+    const showVideo = t.dataset.cam !== "0" && (sharing ? a.share : a.cam);
+    const v = t.querySelector("video");
+    t.querySelector(".avatar").hidden = showVideo;
+    v.style.visibility = showVideo ? "" : "hidden";
+    t.querySelector(".muted-icon").style.display = t.dataset.mic !== "0" && a.mic ? "none" : "";
+    if (t.id !== "tile-self") v.muted = !a.mic; // direct calls play sound through the tile
+    // In RealtimeKit calls the SDK plays sound itself, so stop receiving it instead.
+    if (rtk && t.dataset.rtkId && t.dataset.audioOff !== String(!a.mic)) {
+      t.dataset.audioOff = String(!a.mic);
+      (a.mic ? rtk.participants.subscribe([t.dataset.rtkId], ["audio"]) : rtk.participants.unsubscribe([t.dataset.rtkId], ["audio"])).catch((err) => console.warn("RealtimeKit audio", err));
+    }
   }
 
   /* who is talking: a soft outline on their tile */
@@ -407,6 +440,10 @@
       dropPeer(m.id);
     } else if (m.type === "signal") {
       handleSignal(m.from, m.data);
+    } else if (m.type === "roster") {
+      onRoster(m);
+    } else if (m.type === "denied") {
+      toast(m.perm === "chat" ? "The host has turned off chat for you" : "The host hasn't allowed that");
     } else if (m.type === "chat") {
       addChat(m.name, m.text, false);
     } else if (m.type === "full") {
@@ -508,6 +545,9 @@
   function renderRtkPeer(p) {
     if (!rtk || p.id === rtk.self.id) return;
     const t = addTile("rtk-" + p.id, (p.name || "Guest") + (p.isHost ? " (host)" : ""), null, false);
+    t.dataset.pid = p.customParticipantId || "";
+    t.dataset.rtkId = p.id;
+    t.dataset.host = p.isHost ? "1" : "";
     t.querySelector(".ov").hidden = true;
     const v = t.querySelector("video");
     const share = !!(p.screenShareEnabled && p.screenShareTracks && p.screenShareTracks.video);
@@ -523,6 +563,8 @@
     const p = { id, name, host, pc, stream: new MediaStream(), queue: Promise.resolve(), pending: [], connectedOnce: false };
     peers.set(id, p);
     const tile = addTile(id, name + (host ? " (host)" : ""), p.stream, false);
+    tile.dataset.pid = id;
+    tile.dataset.host = host ? "1" : "";
     pc.onicecandidate = (e) => { if (e.candidate) send({ type: "signal", to: id, data: { candidate: e.candidate.toJSON() } }); };
     pc.ontrack = (e) => {
       p.stream.addTrack(e.track);
@@ -623,6 +665,7 @@
     if (self) self.srcObject = track ? new MediaStream([track]) : localStream;
   }
   async function startShare() {
+    if (!myAllow.share) return toast("The host has turned off screen sharing for you");
     if (rtk) { try { await rtk.self.enableScreenShare(); toast("You're sharing your screen"); } catch { /* cancelled */ } return; }
     try { screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15, max: 30 } }, audio: false }); } catch { return; }
     const t = screenStream.getVideoTracks()[0];
@@ -645,6 +688,105 @@
   }
   $("#cshare").onclick = () => (sharing ? stopShare() : startShare());
 
+  /* ---------- people and permissions ---------- */
+  const PERM_INFO = [
+    ["mic", "Mic", "#i-mic", "microphone"],
+    ["cam", "Camera", "#i-cam", "camera"],
+    ["share", "Share", "#i-share", "screen sharing"],
+    ["chat", "Chat", "#i-chat", "chat"],
+  ];
+
+  function onRoster(m) {
+    roster = { defaults: { ...ALL, ...(m.defaults || {}) }, people: Array.isArray(m.people) ? m.people : [] };
+    const me = roster.people.find((p) => p.id === pid);
+    const before = myAllow;
+    myAllow = amHost() || !me ? { ...ALL } : { ...ALL, ...me.allow };
+    const OFF = { mic: "The host turned off your microphone", cam: "The host turned off your camera", share: "The host turned off screen sharing for you", chat: "The host turned off chat for you" };
+    const ON = { mic: "The host allowed your microphone again", cam: "The host allowed your camera again", share: "The host allowed you to share your screen", chat: "The host allowed you to chat again" };
+    // Only announce changes, not what was already set when you arrived.
+    if (rosterSeen) for (const [perm] of PERM_INFO) {
+      if (before[perm] && !myAllow[perm]) toast(OFF[perm]);
+      else if (!before[perm] && myAllow[perm]) toast(ON[perm]);
+    }
+    rosterSeen = true;
+    // Switch off anything that's no longer allowed. (Being allowed again never switches anything on by itself.)
+    if (!myAllow.mic && micOn) toggleMic();
+    if (!myAllow.cam && camOn) toggleCam();
+    if (!myAllow.share && sharing) stopShare();
+    syncButtons();
+    syncChatPerm();
+    document.querySelectorAll("#tiles .tile").forEach(refreshTile);
+    renderPeople();
+  }
+
+  function syncChatPerm() {
+    const ok = myAllow.chat;
+    $("#cinput").disabled = !ok;
+    $("#cform button").disabled = !ok;
+    $("#cinput").placeholder = ok ? "Message everyone" : "The host has turned off chat for you";
+  }
+
+  function permButton(target, perm, label, icon, allowed, words, who) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pperm";
+    b.setAttribute("aria-pressed", String(allowed));
+    b.setAttribute("aria-label", `${who}: ${words} ${allowed ? "allowed" : "not allowed"}`);
+    b.title = allowed ? `Allowed. Click to stop ${who === "Everyone" ? "everyone's" : "their"} ${words}.` : `Not allowed. Click to allow ${words}.`;
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "icon");
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    use.setAttribute("href", icon);
+    svg.append(use);
+    b.append(svg, label);
+    b.onclick = () => send({ type: "perm", target, perm, allow: !allowed });
+    return b;
+  }
+
+  function renderPeople() {
+    const host = amHost();
+    const list = [...roster.people].sort((a, b) => (b.id === pid) - (a.id === pid) || b.host - a.host || a.name.localeCompare(b.name));
+    $("#ptitle").textContent = `People (${list.length || 1})`;
+    $("#phint").textContent = host ? "Choose what each person can do. “Everyone” sets it for the whole room, including people who join later. You're never restricted." : "Only the host can change what people can do.";
+    const all = $("#pall");
+    all.hidden = !host;
+    all.textContent = "";
+    if (host) {
+      const n = document.createElement("div"); n.className = "pname"; n.append(Object.assign(document.createElement("span"), { textContent: "Everyone" }));
+      const row = document.createElement("div"); row.className = "pperms";
+      for (const [perm, label, icon, words] of PERM_INFO) row.append(permButton("*", perm, label, icon, roster.defaults[perm], words, "Everyone"));
+      all.append(n, row);
+    }
+    const ul = $("#plist");
+    ul.textContent = "";
+    for (const p of list) {
+      const li = document.createElement("li"); li.className = "prow";
+      const n = document.createElement("div"); n.className = "pname";
+      n.append(Object.assign(document.createElement("span"), { textContent: p.name || "Guest" }));
+      const tags = [p.id === pid ? "you" : "", p.host ? "host" : ""].filter(Boolean).join(", ");
+      if (tags) n.append(Object.assign(document.createElement("small"), { textContent: `(${tags})` }));
+      li.append(n);
+      if (host && !p.host) {
+        const row = document.createElement("div"); row.className = "pperms";
+        for (const [perm, label, icon, words] of PERM_INFO) row.append(permButton(p.id, perm, label, icon, p.allow[perm], words, p.name || "Guest"));
+        li.append(row);
+      } else if (!p.host) {
+        const off = PERM_INFO.filter(([perm]) => !p.allow[perm]).map(([, , , words]) => words);
+        if (off.length) li.append(Object.assign(document.createElement("div"), { className: "pnote", textContent: `Not allowed: ${off.join(", ")}` }));
+      }
+      ul.append(li);
+    }
+  }
+
+  function setPeople(open) {
+    if (open) setChat(false);
+    $("#people").hidden = !open;
+    $("#rpeople").setAttribute("aria-pressed", String(open));
+    if (open) renderPeople();
+  }
+  $("#rpeople").onclick = () => setPeople($("#people").hidden);
+  $("#pclose").onclick = () => setPeople(false);
+
   /* ---------- chat ---------- */
   function setUnread(n) {
     unread = n;
@@ -666,6 +808,7 @@
     if (!mine && $("#chat").hidden) { setUnread(unread + 1); toast(`${name}: ${text.length > 60 ? text.slice(0, 60) + "…" : text}`); }
   }
   function setChat(open) {
+    if (open && !$("#people").hidden) setPeople(false);
     $("#chat").hidden = !open;
     $("#cchat").setAttribute("aria-pressed", String(open));
     if (open) { setUnread(0); $("#cinput").focus(); $("#clog").scrollTop = $("#clog").scrollHeight; }
@@ -676,6 +819,7 @@
     e.preventDefault();
     const text = $("#cinput").value.trim();
     if (!text) return;
+    if (!myAllow.chat) return toast("The host has turned off chat for you");
     send({ type: "chat", text });
     addChat(join.name, text, true);
     $("#cinput").value = "";
@@ -685,6 +829,7 @@
   addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (!$("#chat").hidden) return setChat(false);
+      if (!$("#people").hidden) return setPeople(false);
       const s = $(".tile.spot"); if (s) s.click();
       return;
     }
@@ -692,9 +837,9 @@
     const inCall = !$("#room").hidden, inLobby = !$("#lobby").hidden;
     if (!inCall && !inLobby) return;
     const k = e.key.toLowerCase();
-    if (k === "m" && hasMic()) { e.preventDefault(); toggleMic(); toast(micOn ? "Microphone on" : "Microphone muted"); }
+    if (k === "m" && hasMic()) { e.preventDefault(); if (!micOn && !myAllow.mic) toggleMic(); else { toggleMic(); toast(micOn ? "Microphone on" : "Microphone muted"); } }
     else if (k === "g" && inCall && $("#tiles").children.length > 1) { e.preventDefault(); setView(view === "speaker" ? "gallery" : "speaker"); }
-    else if (k === "v" && hasCam()) { e.preventDefault(); toggleCam(); toast(camOn ? "Camera on" : "Camera off"); }
+    else if (k === "v" && hasCam()) { e.preventDefault(); if (!camOn && !myAllow.cam) toggleCam(); else { toggleCam(); toast(camOn ? "Camera on" : "Camera off"); } }
   });
 
   /* ---------- leaving ---------- */
@@ -709,6 +854,7 @@
     localStream = screenStream = null; sharing = false;
     $("#tiles").textContent = "";
     setChat(false);
+    setPeople(false);
   }
   function endCall(title, text, retry) { cleanup(); notice(title, text, retry); }
   $("#cleave").onclick = () => { cleanup(); notice("You left the meeting", "You can rejoin any time while it's open.", true); };
