@@ -13,6 +13,7 @@ export interface Env {
   };
   // vars (wrangler.jsonc)
   APP_NAME: string;
+  PUBLIC_URL?: string; // the site's address, e.g. https://meet.example.com (used for links in emails and API answers)
   PRICE_PENCE: string;
   STRIPE_PRICE_ID?: string;
   EMAIL_FROM?: string;

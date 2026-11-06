@@ -23,6 +23,17 @@
   // A secret per meeting tab: the server turns it into our id in the room, so a reload keeps our place
   // but nobody else can take it. Only our id (never this key) is shown to the others.
   let pid = "", key = "";
+  // A personal join link (?link=..., made by another site through the API) says who you are and whether you host.
+  // Take it out of the address bar straight away so it isn't shared by accident; keep it for this tab.
+  let joinLink = "";
+  try {
+    const q = new URLSearchParams(location.search);
+    joinLink = q.get("link") || sessionStorage.getItem("meet-link-" + code) || "";
+    if (q.has("link")) {
+      if (joinLink) sessionStorage.setItem("meet-link-" + code, joinLink);
+      history.replaceState(null, "", location.pathname);
+    }
+  } catch { /* storage blocked: the link still works for this page load */ }
   try { key = sessionStorage.getItem(keyName) || ""; } catch { /* storage blocked */ }
 
   const panel = (id) => {
@@ -42,7 +53,7 @@
   /* ---------- lobby ---------- */
   async function start() {
     if (!code) return notice("No meeting here", "Open the full meeting link you were sent, or go home and paste it.");
-    const r = await api("/api/room/" + code);
+    const r = await api("/api/room/" + code + (joinLink ? "?link=" + encodeURIComponent(joinLink) : ""));
     if (!r.ok) return notice("Meeting not found", r.data.error || "Check you copied the whole link.");
     info = r.data;
     document.title = info.title;
@@ -59,6 +70,8 @@
     let saved = "";
     try { saved = localStorage.getItem("meet-name") || ""; } catch { /* ignore */ }
     $("#lname").value = info.userName || saved;
+    $("#lname").readOnly = !!info.nameFixed;
+    $("#lname").title = info.nameFixed ? "Set by your invitation link" : "";
     getMedia().then(() => { if (!$("#lname").value) $("#lname").focus(); else $("#ljoin").focus(); });
   }
 
@@ -146,14 +159,14 @@
     if (!name) { $("#lname").focus(); return show($("#lmsg"), "error", "Please type your name."); }
     App.busy($("#ljoin"), true);
     show($("#lmsg"), "", "");
-    try { localStorage.setItem("meet-name", name); } catch { /* ignore */ }
+    if (!info.nameFixed) try { localStorage.setItem("meet-name", name); } catch { /* ignore */ }
     const ok = await fetchJoin(name);
     App.busy($("#ljoin"), false);
     if (ok) enterRoom(name);
   });
 
   async function fetchJoin(name) {
-    const r = await api("/api/join", { room: code, name, key });
+    const r = await api("/api/join", { room: code, name, key, link: joinLink || undefined });
     if (!r.ok) { show($("#lmsg"), "error", r.data.error || "Couldn't join."); if (r.status === 410 || r.status === 403) notice("Can't join", r.data.error); return false; }
     join = r.data;
     pid = join.pid;
@@ -476,10 +489,10 @@
       screenStream = null; sharing = false;
       try {
         await loadRtkSdk();
-        let r = await api("/api/join/rtk", { room: code, key, name: join.name });
+        let r = await api("/api/join/rtk", { room: code, key, name: join.name, link: joinLink || undefined });
         for (let i = 0; i < 3 && !r.ok && r.data.code === "not_upgraded"; i++) { // the room server may not have switched yet
           await new Promise((ok) => setTimeout(ok, 800));
-          r = await api("/api/join/rtk", { room: code, key, name: join.name });
+          r = await api("/api/join/rtk", { room: code, key, name: join.name, link: joinLink || undefined });
         }
         if (!r.ok) throw new Error(r.data.error || "no token");
         const meeting = await window.RealtimeKitClient.init({

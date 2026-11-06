@@ -12,6 +12,7 @@ RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing i
 | `/dashboard` | Subscription, instant meeting, personal room, scheduling + invitations, delete account |
 | `/m/<code>` | The meeting room (the link you share) |
 | `/legal` | Short terms and privacy notice (edit to suit you) |
+| `/developers` | API docs for another site (e.g. a tutoring site) that creates meetings and join links |
 
 ## How it works
 
@@ -36,6 +37,11 @@ RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing i
   accepts changes from the host. Chat is blocked on the server. For mic, camera and screen share, the person's own
   buttons are switched off and locked, and everyone else's page stops playing that person's sound or video, so a modified
   page can't get round it. "Everyone" settings are kept for the room; per-person ones are forgotten once everyone leaves.
+- **API for other sites:** a host creates an API key on the dashboard and gives it to another site's developer (docs at
+  `/developers`). That site's server can create, reschedule, list and cancel meetings (with its own `externalId`, so
+  retries never make duplicates) and get **personal join links**: e.g. the tutor as host, the student as guest, each
+  with their name filled in and no account needed. Keys are stored only as a hash, can be deleted any time, are rate
+  limited, and only work from a server. Meetings made this way follow the same rules as the dashboard.
 - **Video:** WebRTC mesh: everyone connects to everyone, so 4 people means 3 connections each. **All media is relayed
   through Cloudflare TURN**, so nobody sees anyone's IP address and every call takes the same path. A small Durable
   Object per meeting (`src/room.ts`) only passes the "find each other" messages and chat. Bitrate is lowered
@@ -48,7 +54,7 @@ You need Node.js and a Cloudflare account on the Workers **Paid** plan (Durable 
 ```bash
 npm install
 npx wrangler login             # once
-npm run db:remote              # creates the D1 database, puts its id in wrangler.jsonc, creates the tables
+npm run db:remote              # creates the D1 database, puts its id in wrangler.jsonc, creates the tables (safe to re-run after updates)
 npm run deploy
 ```
 

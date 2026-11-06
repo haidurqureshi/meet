@@ -136,3 +136,28 @@ export async function verifyJoin(secret: string, token: string | null): Promise<
     return null;
   }
 }
+
+/* ---------- personal join links (made through the API, e.g. for a tutor and a student) ---------- */
+
+/** Who a join link is for: a name shown in the call, and whether they join as a host. Valid for one meeting only. */
+export type InvitePayload = { room: string; name: string; role: "host" | "guest"; exp: number };
+
+export async function signInvite(secret: string, payload: InvitePayload): Promise<string> {
+  const body = toBase64Url(enc.encode(JSON.stringify(payload)));
+  return `${body}.${await hmacHex(secret, `invite:${body}`)}`;
+}
+
+export async function verifyInvite(secret: string, token: unknown, room: string): Promise<InvitePayload | null> {
+  if (typeof token !== "string" || !token || token.length > 1000) return null;
+  const [body, sig, extra] = token.split(".");
+  if (!body || !sig || extra !== undefined) return null;
+  if (!safeEqual(sig, await hmacHex(secret, `invite:${body}`))) return null;
+  try {
+    const p = JSON.parse(new TextDecoder().decode(fromBase64Url(body))) as InvitePayload;
+    if (p.room !== room || typeof p.exp !== "number" || p.exp < Date.now()) return null;
+    if (typeof p.name !== "string" || (p.role !== "host" && p.role !== "guest")) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}

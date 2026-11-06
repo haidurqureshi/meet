@@ -48,7 +48,9 @@ const isLocal = (request: Request) => ["127.0.0.1", "::1"].includes(request.head
 
 /** The testing switches (.dev.vars) only ever work locally, so setting one by mistake in production does nothing. */
 function effectiveEnv(env: Env, request: Request): Env {
-  if (isLocal(request) || (!env.DEV_SKIP_BILLING && !env.RTC_ALLOW_DIRECT && !env.EMAIL_DEV_LOG)) return env;
+  // Locally, links point at this machine rather than the live site.
+  if (isLocal(request)) return env.PUBLIC_URL ? { ...env, PUBLIC_URL: undefined } : env;
+  if (!env.DEV_SKIP_BILLING && !env.RTC_ALLOW_DIRECT && !env.EMAIL_DEV_LOG) return env;
   return { ...env, DEV_SKIP_BILLING: undefined, RTC_ALLOW_DIRECT: undefined, EMAIL_DEV_LOG: undefined };
 }
 
