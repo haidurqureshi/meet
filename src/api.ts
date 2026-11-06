@@ -11,11 +11,13 @@ import {
   readSession,
   sha256Hex,
   signJoin,
+  verifyInvite,
   verifyPassword,
 } from "./crypto";
 import { formatWhen, inviteEmail, passwordChangedEmail, resetEmail, sendEmail, verifyEmail } from "./email";
 import type { Env } from "./env";
 import { getIce } from "./ice";
+import { handleV1 } from "./v1";
 import { rtkConfigured, rtkMax } from "./realtimekit";
 import { clearHits, isLimited, recordHit } from "./ratelimit";
 import {
@@ -29,7 +31,7 @@ import {
   type StripeSubscription,
 } from "./stripe";
 
-type UserRow = {
+export type UserRow = {
   id: number;
   email: string;
   name: string;
@@ -43,15 +45,21 @@ type UserRow = {
   sub_cancel_at_end: number;
 };
 
-type Ctx = { req: Request; env: Env; url: URL; wait: (p: Promise<unknown>) => void };
+export type Ctx = { req: Request; env: Env; url: URL; wait: (p: Promise<unknown>) => void };
 
-const OPEN_BEFORE_MS = 15 * 60_000;
-const GRACE_AFTER_MS = 60 * 60_000;
-const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/;
+export const OPEN_BEFORE_MS = 15 * 60_000;
+export const GRACE_AFTER_MS = 60 * 60_000;
+export const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]+\.[^\s@]{2,}$/;
 
 /* ---------- small helpers ---------- */
 
-const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
+/** The site's own address for links in emails and API answers: PUBLIC_URL if set, else the address this request came to. */
+export function origin(c: Ctx): string {
+  const p = c.env.PUBLIC_URL?.trim().replace(/\/+$/, "");
+  return p && /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(p) ? p : c.url.origin;
+}
+
+export const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...headers } });
 const fail = (error: string, status = 400, extra: Record<string, unknown> = {}) => json({ error, ...extra }, status);
 
@@ -63,7 +71,7 @@ function readCookie(req: Request, name: string): string | undefined {
   return undefined;
 }
 
-async function body(req: Request): Promise<Record<string, unknown>> {
+export async function body(req: Request): Promise<Record<string, unknown>> {
   try {
     if (Number(req.headers.get("Content-Length") ?? 0) > 20_000) return {};
     const text = await req.text();
@@ -75,8 +83,8 @@ async function body(req: Request): Promise<Record<string, unknown>> {
   }
 }
 
-const str = (v: unknown, max: number) => (typeof v === "string" ? v.replace(/[\u0000-\u001f]/g, "").trim().slice(0, max) : "");
-const ip = (req: Request) => req.headers.get("CF-Connecting-IP") ?? "unknown";
+export const str = (v: unknown, max: number) => (typeof v === "string" ? v.replace(/[\u0000-\u001f]/g, "").trim().slice(0, max) : "");
+export const ip = (req: Request) => req.headers.get("CF-Connecting-IP") ?? "unknown";
 
 function setSession(url: URL, value: string, maxAge: number): string {
   return `${SESSION_COOKIE}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${url.protocol === "https:" ? "; Secure" : ""}`;
@@ -91,10 +99,10 @@ async function getUser(c: Ctx): Promise<UserRow | null> {
   return row;
 }
 
-const isSubscribed = (env: Env, u: Pick<UserRow, "sub_status">) =>
+export const isSubscribed = (env: Env, u: Pick<UserRow, "sub_status">) =>
   env.DEV_SKIP_BILLING === "1" || u.sub_status === "active" || u.sub_status === "trialing";
 
-function priceLabel(env: Env): string {
+export function priceLabel(env: Env): string {
   const p = pricePence(env) / 100;
   return `£${Number.isInteger(p) ? p : p.toFixed(2)}/month`;
 }
@@ -137,7 +145,7 @@ async function takeToken(db: D1Database, token: string, kind: "reset" | "verify"
   return row.user_id;
 }
 
-function validTz(tz: string): boolean {
+export function validTz(tz: string): boolean {
   try {
     new Intl.DateTimeFormat("en-GB", { timeZone: tz });
     return tz.length > 0 && tz.length < 60;
@@ -146,10 +154,10 @@ function validTz(tz: string): boolean {
   }
 }
 
-const windowState = (startsAt: number, durationMin: number, now = Date.now()) =>
+export const windowState = (startsAt: number, durationMin: number, now = Date.now()) =>
   now < startsAt - OPEN_BEFORE_MS ? "early" : now > startsAt + durationMin * 60_000 + GRACE_AFTER_MS ? "over" : "open";
 
-function parseEmails(v: unknown): string[] {
+export function parseEmails(v: unknown): string[] {
   const raw = Array.isArray(v) ? v.map(String) : typeof v === "string" ? v.split(/[\s,;]+/) : [];
   return [...new Set(raw.map((e) => e.trim().toLowerCase()).filter((e) => e && e.length <= 254))];
 }
@@ -195,7 +203,7 @@ async function signup(c: Ctx): Promise<Response> {
   if (!userId) return fail("Sorry, we couldn't create your account. Please try again.", 500);
 
   const token = await issueToken(db, userId, "verify", 48 * 3600_000);
-  c.wait(sendEmail(c.env, verifyEmail(c.env.APP_NAME, email, name, `${c.url.origin}/verify?token=${token}`)));
+  c.wait(sendEmail(c.env, verifyEmail(c.env.APP_NAME, email, name, `${origin(c)}/verify?token=${token}`)));
   return json({ ok: true }, 200, { "Set-Cookie": setSession(c.url, await makeSession(c.env.SESSION_SECRET, userId, hash), SESSION_S) });
 }
 
@@ -226,7 +234,7 @@ async function resendVerify(c: Ctx, u: UserRow): Promise<Response> {
   if (await isLimited(c.env.DB, key, 3, 3600_000)) return fail("Please wait a while before asking for another email.", 429);
   await recordHit(c.env.DB, key);
   const token = await issueToken(c.env.DB, u.id, "verify", 48 * 3600_000);
-  c.wait(sendEmail(c.env, verifyEmail(c.env.APP_NAME, u.email, u.name, `${c.url.origin}/verify?token=${token}`)));
+  c.wait(sendEmail(c.env, verifyEmail(c.env.APP_NAME, u.email, u.name, `${origin(c)}/verify?token=${token}`)));
   return json({ ok: true });
 }
 
@@ -257,7 +265,7 @@ async function forgot(c: Ctx): Promise<Response> {
       const u = await db.prepare("SELECT * FROM users WHERE email = ?1").bind(email).first<UserRow>();
       if (!u) return;
       const token = await issueToken(db, u.id, "reset", 3600_000);
-      await sendEmail(c.env, resetEmail(c.env.APP_NAME, u.email, u.name, `${c.url.origin}/reset?token=${token}`));
+      await sendEmail(c.env, resetEmail(c.env.APP_NAME, u.email, u.name, `${origin(c)}/reset?token=${token}`));
     })()
   );
   return generic;
@@ -302,6 +310,8 @@ async function deleteAccount(c: Ctx, u: UserRow): Promise<Response> {
   await db.batch([
     db.prepare("DELETE FROM invites WHERE meeting_id IN (SELECT id FROM meetings WHERE owner_id = ?1)").bind(u.id),
     db.prepare("DELETE FROM meetings WHERE owner_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM meeting_refs WHERE owner_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM api_keys WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM email_tokens WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM users WHERE id = ?1").bind(u.id),
   ]);
@@ -328,7 +338,7 @@ async function checkout(c: Ctx, u: UserRow): Promise<Response> {
   if (isSubscribed(c.env, u) && c.env.DEV_SKIP_BILLING !== "1") return fail("Your host account is already active.");
   try {
     const s = await createSubscriptionCheckout(c.env, {
-      origin: c.url.origin,
+      origin: origin(c),
       userId: u.id,
       email: u.email,
       customerId: u.stripe_customer_id,
@@ -362,7 +372,7 @@ async function confirmCheckout(c: Ctx, u: UserRow): Promise<Response> {
 async function portal(c: Ctx, u: UserRow): Promise<Response> {
   if (!c.env.STRIPE_SECRET_KEY || !u.stripe_customer_id) return fail("There's no billing account to manage yet.", 400);
   try {
-    return json({ url: await createPortalSession(c.env, u.stripe_customer_id, `${c.url.origin}/dashboard`) });
+    return json({ url: await createPortalSession(c.env, u.stripe_customer_id, `${origin(c)}/dashboard`) });
   } catch (err) {
     console.error("Stripe portal failed:", err);
     return fail("Couldn't open the billing page. Please try again.", 502);
@@ -407,11 +417,11 @@ async function stripeWebhook(c: Ctx): Promise<Response> {
 
 /* ---------- meetings ---------- */
 
-type MeetingRow = { id: string; owner_id: number; title: string; starts_at: number; duration_min: number; tz: string; kind: "scheduled" | "instant"; created_at: number };
+export type MeetingRow = { id: string; owner_id: number; title: string; starts_at: number; duration_min: number; tz: string; kind: "scheduled" | "instant"; created_at: number };
 
-const meetingUrl = (c: Ctx, id: string) => `${c.url.origin}/m/${id}`;
+export const meetingUrl = (c: Ctx, id: string) => `${origin(c)}/m/${id}`;
 
-async function sendInvites(
+export async function sendInvites(
   c: Ctx,
   host: UserRow,
   m: Pick<MeetingRow, "id" | "title" | "starts_at" | "duration_min" | "tz">,
@@ -444,7 +454,7 @@ async function sendInvites(
 }
 
 /** Checks the host may send this many invitations right now. Returns an error response or null. */
-async function checkInviteAllowed(c: Ctx, u: UserRow, count: number): Promise<Response | null> {
+export async function checkInviteAllowed(c: Ctx, u: UserRow, count: number): Promise<Response | null> {
   if (count === 0) return null;
   if (!u.email_verified) return fail("Please confirm your email address first (check your inbox), then you can send invitations.", 403, { code: "verify_email" });
   const row = await c.env.DB
@@ -537,6 +547,7 @@ async function deleteMeeting(c: Ctx, u: UserRow, id: string): Promise<Response> 
   if (!owned) return fail("Meeting not found.", 404);
   await c.env.DB.batch([
     c.env.DB.prepare("DELETE FROM invites WHERE meeting_id = ?1").bind(id),
+    c.env.DB.prepare("DELETE FROM meeting_refs WHERE meeting_id = ?1").bind(id),
     c.env.DB.prepare("DELETE FROM meetings WHERE id = ?1").bind(id),
   ]);
   return json({ ok: true });
@@ -585,11 +596,17 @@ function roomStatus(env: Env, r: Room, isHost: boolean): "open" | "early" | "ove
   return windowState(r.startsAt!, r.durationMin!);
 }
 
+/** A personal join link (made through the API) for this meeting, if one came with the request and is valid. */
+async function linkFor(c: Ctx, id: string, token: unknown) {
+  return token ? verifyInvite(c.env.SESSION_SECRET, token, id) : null;
+}
+
 async function roomInfo(c: Ctx, id: string): Promise<Response> {
   const r = await findRoom(c.env, id);
   if (!r) return fail("This meeting link isn't valid. Check you copied all of it.", 404);
   const me = await getUser(c);
-  const isHost = !!me && me.id === r.ownerId;
+  const link = await linkFor(c, id, c.url.searchParams.get("link"));
+  const isHost = (!!me && me.id === r.ownerId) || link?.role === "host";
   return json({
     title: r.title,
     hostName: r.hostName,
@@ -597,7 +614,8 @@ async function roomInfo(c: Ctx, id: string): Promise<Response> {
     startsAt: r.startsAt,
     status: roomStatus(c.env, r, isHost),
     isHost,
-    userName: me?.name ?? "",
+    userName: link?.name ?? me?.name ?? "",
+    nameFixed: !!link,
     maxPeople: rtkConfigured(c.env) ? rtkMax(c.env) : 4,
     appName: c.env.APP_NAME,
   });
@@ -609,7 +627,8 @@ async function joinRoom(c: Ctx): Promise<Response> {
   const r = await findRoom(c.env, id);
   if (!r) return fail("This meeting link isn't valid. Check you copied all of it.", 404);
   const me = await getUser(c);
-  const isHost = !!me && me.id === r.ownerId;
+  const link = await linkFor(c, id, b.link);
+  const isHost = (!!me && me.id === r.ownerId) || link?.role === "host";
   const status = roomStatus(c.env, r, isHost);
   if (status === "unavailable") return fail("This meeting isn't available right now. The host's account is inactive.", 403);
   if (status === "early") return fail("This meeting hasn't opened yet. It opens 15 minutes before the start time.", 403);
@@ -618,7 +637,8 @@ async function joinRoom(c: Ctx): Promise<Response> {
   // The browser keeps a secret key per meeting; its id in the room is derived from it, so nobody else can claim that id.
   const deviceKey = typeof b.key === "string" && /^[A-Za-z0-9_-]{22,64}$/.test(b.key) ? b.key : randomToken();
   const pid = await participantId(c.env.SESSION_SECRET, id, deviceKey);
-  const name = str(b.name, 40).replace(/[<>]/g, "").replace(/\(host\)/gi, "").trim() || me?.name || "Guest";
+  // A personal join link fixes the name (e.g. the tutor's or student's name from the booking site).
+  const name = link?.name || str(b.name, 40).replace(/[<>]/g, "").replace(/\(host\)/gi, "").trim() || me?.name || "Guest";
   const lifetimeMs = 6 * 3600_000;
   const ice = await getIce(c.env, lifetimeMs / 1000);
   if (!ice) return fail("Video isn't switched on yet: the Cloudflare TURN key is missing or isn't working.", 503);
@@ -639,12 +659,13 @@ async function joinRtk(c: Ctx): Promise<Response> {
   const r = await findRoom(c.env, id);
   if (!r) return fail("This meeting link isn't valid. Check you copied all of it.", 404);
   const me = await getUser(c);
-  const isHost = !!me && me.id === r.ownerId;
+  const link = await linkFor(c, id, b.link);
+  const isHost = (!!me && me.id === r.ownerId) || link?.role === "host";
   const status = roomStatus(c.env, r, isHost);
   if (status !== "open") return fail("This meeting isn't open right now.", 403);
   if (typeof b.key !== "string" || !/^[A-Za-z0-9_-]{22,64}$/.test(b.key)) return fail("Please rejoin the meeting.", 400);
   const pid = await participantId(c.env.SESSION_SECRET, id, b.key);
-  const name = str(b.name, 40).replace(/[<>]/g, "").replace(/\(host\)/gi, "").trim() || me?.name || "Guest";
+  const name = link?.name || str(b.name, 40).replace(/[<>]/g, "").replace(/\(host\)/gi, "").trim() || me?.name || "Guest";
   const stub = c.env.ROOMS.get(c.env.ROOMS.idFromName(id));
   const res = await stub.fetch("https://room/rtk-token", {
     method: "POST",
@@ -656,6 +677,34 @@ async function joinRtk(c: Ctx): Promise<Response> {
   if (data.error === "not_upgraded") return fail("This meeting is still a small call.", 409, { code: "not_upgraded" });
   if (data.error === "not_in_room") return fail("Please rejoin the meeting.", 403);
   return fail("We couldn't move the meeting to the larger-call service. Please try again in a moment.", 502);
+}
+
+/* ---------- API keys (made on the dashboard, used by other services) ---------- */
+
+type ApiKeyRow = { id: number; name: string; prefix: string; created_at: number; last_used_at: number | null };
+
+async function listKeys(c: Ctx, u: UserRow): Promise<Response> {
+  const r = await c.env.DB.prepare("SELECT id, name, prefix, created_at, last_used_at FROM api_keys WHERE user_id = ?1 ORDER BY id").bind(u.id).all<ApiKeyRow>();
+  return json({ keys: r.results.map((k) => ({ id: k.id, name: k.name, prefix: k.prefix, createdAt: k.created_at, lastUsedAt: k.last_used_at })) });
+}
+
+async function createKey(c: Ctx, u: UserRow): Promise<Response> {
+  const b = await body(c.req);
+  const name = str(b.name, 60) || "API key";
+  const n = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?1").bind(u.id).first<{ n: number }>();
+  if ((n?.n ?? 0) >= 10) return fail("You can have up to 10 API keys. Delete one you don't use first.");
+  // Shown once. Only its hash is stored, like a password.
+  const key = `mk_${randomToken()}`;
+  await c.env.DB
+    .prepare("INSERT INTO api_keys (user_id, name, key_hash, prefix, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+    .bind(u.id, name, await sha256Hex(key), key.slice(0, 10), Date.now())
+    .run();
+  return json({ key, name });
+}
+
+async function deleteKey(c: Ctx, u: UserRow, id: number): Promise<Response> {
+  const r = await c.env.DB.prepare("DELETE FROM api_keys WHERE id = ?1 AND user_id = ?2").bind(id, u.id).run();
+  return r.meta.changes ? json({ ok: true }) : fail("Key not found.", 404);
 }
 
 /* ---------- router ---------- */
@@ -681,6 +730,7 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   const post = req.method === "POST";
 
   if (path === "/api/stripe/webhook" && post) return stripeWebhook(c); // signed by Stripe, not a browser
+  if (path.startsWith("/api/v1/")) return handleV1(c); // for other services: API key, not a browser session
   if (post && (!sameOrigin(req, url) || !isJson(req))) return fail("Forbidden", 403);
   if (!env.SESSION_SECRET) return fail("Not set up yet: the SESSION_SECRET secret is missing.", 503);
 
@@ -709,6 +759,10 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   if (path === "/api/billing/confirm" && post) return confirmCheckout(c, u);
   if (path === "/api/billing/portal" && post) return portal(c, u);
   if (path === "/api/personal-room/rotate" && post) return rotatePersonalRoom(c, u);
+  if (path === "/api/keys" && req.method === "GET") return listKeys(c, u);
+  if (path === "/api/keys" && post) return createKey(c, u);
+  const delKey = /^\/api\/keys\/(\d{1,9})\/delete$/.exec(path);
+  if (delKey && post) return deleteKey(c, u, Number(delKey[1]));
   if (path === "/api/meetings" && req.method === "GET") return listMeetings(c, u);
   if (path === "/api/meetings" && post) return createMeeting(c, u);
   const inv = /^\/api\/meetings\/([a-z2-9]{12})\/invite$/.exec(path);

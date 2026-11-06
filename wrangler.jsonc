@@ -18,6 +18,8 @@
   "vars": {
     // Name shown on the pages and in emails.
     "APP_NAME": "Meet",
+    // The site's public address, used for links in emails and API answers.
+    "PUBLIC_URL": "https://meet.haidurqureshi.com",
     // Price of a host account per month, in pence (1000 = £10). Used for the subscription and shown on the pages.
     "PRICE_PENCE": "1000",
     // OPTIONAL: a Stripe recurring Price ID (price_...). If set it overrides PRICE_PENCE. Leave "" to charge PRICE_PENCE.

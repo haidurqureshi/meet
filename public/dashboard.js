@@ -183,6 +183,40 @@
     $("#pastBox").hidden = !r.data.past.length;
   }
 
+  /* ---------- API keys ---------- */
+  async function loadKeys() {
+    const r = await api("/api/keys");
+    const ul = $("#keys");
+    ul.textContent = "";
+    if (!r.ok) return;
+    if (!r.data.keys.length) ul.append(el("li", { className: "muted small" }, "No API keys yet."));
+    for (const k of r.data.keys) {
+      const used = k.lastUsedAt ? `last used ${fmtDate(k.lastUsedAt)}` : "never used";
+      ul.append(el("li", {},
+        el("div", { className: "mt" }, el("strong", {}, k.name), el("span", { className: "muted small" }, `${k.prefix}… · made ${fmtDay(k.createdAt)} · ${used}`)),
+        el("div", { className: "row" }, el("button", { className: "linkbtn", onclick: () => deleteKey(k) }, "Delete"))));
+    }
+  }
+  async function deleteKey(k) {
+    if (!confirm(`Delete the key "${k.name}"? Anything using it will stop working straight away.`)) return;
+    const r = await api(`/api/keys/${k.id}/delete`, {});
+    if (r.ok) { toast("Key deleted"); loadKeys(); } else show($("#kmsg"), "error", r.data.error);
+  }
+  $("#kform").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    show($("#kmsg"), "", "");
+    busy($("#kbtn"), true);
+    const r = await api("/api/keys", { name: e.target.name.value });
+    busy($("#kbtn"), false);
+    if (!r.ok) return show($("#kmsg"), "error", r.data.error || "Something went wrong.");
+    e.target.name.value = "";
+    $("#newKey").hidden = false;
+    $("#newKeyValue").value = r.data.key;
+    $("#newKeyCopy").onclick = () => App.copy(r.data.key).then(() => toast("API key copied"));
+    $("#newKeyValue").select();
+    loadKeys();
+  });
+
   $("#dform").addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!e.target.password.value) return show($("#dmsg"), "error", "Please enter your password.");
@@ -213,6 +247,7 @@
     }
     renderUser();
     loadMeetings();
+    loadKeys();
     // Keep "in 5 minutes" / "Live" up to date if the page stays open.
     setInterval(() => { if (!document.querySelector(".meetings form")) loadMeetings(); }, 60_000);
   }

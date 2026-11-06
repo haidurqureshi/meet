@@ -57,3 +57,24 @@ CREATE TABLE IF NOT EXISTS stripe_events (
   id         TEXT    PRIMARY KEY,
   created_at INTEGER NOT NULL
 );
+
+-- API keys for other services (e.g. a booking or tutoring site). Only a SHA-256 hash of each key is stored.
+CREATE TABLE IF NOT EXISTS api_keys (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      INTEGER NOT NULL,
+  name         TEXT    NOT NULL,
+  key_hash     TEXT    NOT NULL UNIQUE,
+  prefix       TEXT    NOT NULL,                         -- the first few characters, so the owner can tell keys apart
+  created_at   INTEGER NOT NULL,
+  last_used_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys (user_id);
+
+-- The other service's own id for a meeting (e.g. a lesson id), so retrying a request never makes a second meeting.
+CREATE TABLE IF NOT EXISTS meeting_refs (
+  owner_id    INTEGER NOT NULL,
+  external_id TEXT    NOT NULL,
+  meeting_id  TEXT    NOT NULL,
+  PRIMARY KEY (owner_id, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_meeting_refs_meeting ON meeting_refs (meeting_id);

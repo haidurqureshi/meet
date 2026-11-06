@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meeting API</title><meta name="robots" content="noindex"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css"></head>
+<body data-page="developers">
+<header class="top"><a class="brand" href="/" data-app>Meet</a><nav id="nav"></nav></header>
+<main class="card wide docs">
+<h1>Meeting API</h1>
+<p class="lead">For another website, such as a booking or tutoring site, to create video meetings and give each person their own join link.</p>
+
+<h2>The idea</h2>
+<ol>
+  <li>When a lesson is booked, your server <strong>creates a meeting</strong>, passing your own lesson id as <code>externalId</code>.</li>
+  <li>It asks for a <strong>join link for each person</strong>: the tutor as <code>"host"</code>, the student as <code>"guest"</code>. Each link opens the meeting with that person's name already filled in. Nobody needs an account here.</li>
+  <li>If the lesson moves, <strong>update</strong> the meeting. If it's cancelled, <strong>delete</strong> it. Links already sent keep working for the new time.</li>
+</ol>
+<p>The room opens 15 minutes before the start and closes an hour after the end. People with a host link can go in any time. Hosts can allow or stop each person's mic, camera, screen share and chat during the call.</p>
+
+<h2>Keys</h2>
+<p>The account owner creates a key on their <a href="/dashboard">dashboard</a> (<em>API keys</em>). Send it with every request:</p>
+<pre><code>Authorization: Bearer mk_...</code></pre>
+<ul>
+  <li><strong>Server-to-server only.</strong> Keep the key in your server's secrets, never in web page or app code. Requests from another site's browser are refused.</li>
+  <li>Meetings belong to the key's account, which needs an active host subscription to create meetings and links (otherwise <code>402</code>).</li>
+  <li>Limit: 120 requests a minute per key (<code>429</code> with <code>Retry-After</code>).</li>
+  <li>Deleting a key on the dashboard stops it straight away.</li>
+</ul>
+<p>Base address: <code><span data-origin>https://meet.example.com</span>/api/v1</code>. Bodies are JSON (<code>Content-Type: application/json</code>). Times are ISO 8601 in UTC, e.g. <code>"2026-11-20T16:00:00Z"</code>.</p>
+
+<h2>Endpoints</h2>
+<table>
+  <tr><th>Request</th><th>What it does</th></tr>
+  <tr><td><span class="method">GET</span><code>/account</code></td><td>Check the key works: the account's name and whether it can host.</td></tr>
+  <tr><td><span class="method">POST</span><code>/meetings</code></td><td>Create a meeting.</td></tr>
+  <tr><td><span class="method">GET</span><code>/meetings</code></td><td>List upcoming meetings (<code>?from=</code>, <code>?to=</code>, <code>?limit=</code> up to 200), or find one with <code>?externalId=</code>.</td></tr>
+  <tr><td><span class="method">GET</span><code>/meetings/{id}</code></td><td>One meeting.</td></tr>
+  <tr><td><span class="method">PATCH</span><code>/meetings/{id}</code></td><td>Change <code>title</code>, <code>startsAt</code>, <code>durationMin</code> or <code>timezone</code>.</td></tr>
+  <tr><td><span class="method">DELETE</span><code>/meetings/{id}</code></td><td>Cancel it. Its link and all join links stop working.</td></tr>
+  <tr><td><span class="method">POST</span><code>/meetings/{id}/links</code></td><td>A personal join link for one person.</td></tr>
+</table>
+
+<h3>Create a meeting</h3>
+<pre><code>curl -X POST <span data-origin>https://meet.example.com</span>/api/v1/meetings \
+  -H "Authorization: Bearer $MEET_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Maths with Ms Patel",
+    "startsAt": "2026-11-20T16:00:00Z",
+    "durationMin": 60,
+    "timezone": "Europe/London",
+    "externalId": "lesson-1042"
+  }'</code></pre>
+<table>
+  <tr><th>Field</th><th></th></tr>
+  <tr><td><code>startsAt</code></td><td>Required. Within the next year.</td></tr>
+  <tr><td><code>durationMin</code></td><td>15 to 480. Default 60.</td></tr>
+  <tr><td><code>title</code></td><td>Up to 100 characters. Default "Meeting".</td></tr>
+  <tr><td><code>timezone</code></td><td>IANA name, used to word invitation emails. Default "UTC".</td></tr>
+  <tr><td><code>externalId</code></td><td>Optional, recommended: your own id (letters, digits, <code>. _ : -</code>). Sending the same one again returns the existing meeting (<code>"created": false</code>) instead of making another, so retries are safe.</td></tr>
+  <tr><td><code>invitees</code>, <code>note</code></td><td>Optional. Up to 10 email addresses that this site emails an invitation to (needs the account's email confirmed; 30 a day). Leave out if your site sends its own emails.</td></tr>
+</table>
+<p>Answer (<code>201</code>, or <code>200</code> for an existing <code>externalId</code>):</p>
+<pre><code>{
+  "data": {
+    "id": "k3m9xq2vbn7d",
+    "url": "<span data-origin>https://meet.example.com</span>/m/k3m9xq2vbn7d",
+    "title": "Maths with Ms Patel",
+    "startsAt": "2026-11-20T16:00:00.000Z",
+    "durationMin": 60,
+    "timezone": "Europe/London",
+    "externalId": "lesson-1042",
+    "status": "upcoming",
+    "createdAt": "2026-11-06T10:12:00.000Z"
+  },
+  "created": true,
+  "invited": 0
+}</code></pre>
+<p><code>status</code> is <code>"upcoming"</code>, <code>"open"</code> (from 15 minutes before) or <code>"ended"</code>. <code>url</code> is the plain meeting link: anyone with it can join as a guest and type their own name.</p>
+
+<h3>Personal join links</h3>
+<pre><code>curl -X POST <span data-origin>https://meet.example.com</span>/api/v1/meetings/k3m9xq2vbn7d/links \
+  -H "Authorization: Bearer $MEET_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "Ms Patel", "role": "host" }'</code></pre>
+<pre><code>{
+  "data": {
+    "url": "<span data-origin>https://meet.example.com</span>/m/k3m9xq2vbn7d?link=eyJyb29tIj...",
+    "name": "Ms Patel",
+    "role": "host",
+    "expiresAt": "2027-02-04T10:12:00.000Z"
+  }
+}</code></pre>
+<ul>
+  <li><code>name</code>: required, up to 40 characters. Shown to everyone in the call, and can't be changed by the person.</li>
+  <li><code>role</code>: <code>"host"</code> (can enter early, and controls who may use their mic, camera, screen share and chat) or <code>"guest"</code> (default).</li>
+  <li><code>expiresInDays</code>: 1 to 365, default 90.</li>
+  <li>Make links when you need them; there's no limit and nothing is stored. Treat each link like a password for that meeting: send it only to that person. To stop all of a meeting's links, delete the meeting.</li>
+</ul>
+
+<h3>Reschedule or cancel</h3>
+<pre><code>curl -X PATCH <span data-origin>https://meet.example.com</span>/api/v1/meetings/k3m9xq2vbn7d \
+  -H "Authorization: Bearer $MEET_API_KEY" -H "Content-Type: application/json" \
+  -d '{ "startsAt": "2026-11-21T16:00:00Z" }'
+
+curl -X DELETE <span data-origin>https://meet.example.com</span>/api/v1/meetings/k3m9xq2vbn7d \
+  -H "Authorization: Bearer $MEET_API_KEY"</code></pre>
+
+<h3>Example: Node.js / Cloudflare Workers</h3>
+<pre><code>const MEET = "<span data-origin>https://meet.example.com</span>/api/v1";
+
+async function meet(path, method = "GET", body) {
+  const res = await fetch(MEET + path, {
+    method,
+    headers: { Authorization: `Bearer ${process.env.MEET_API_KEY}`, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(`${json.error.code}: ${json.error.message}`);
+  return json.data;
+}
+
+// When a lesson is booked:
+const m = await meet("/meetings", "POST", {
+  title: `${lesson.subject} with ${tutor.name}`,
+  startsAt: lesson.start.toISOString(),
+  durationMin: lesson.minutes,
+  externalId: `lesson-${lesson.id}`,
+});
+const tutorLink = (await meet(`/meetings/${m.id}/links`, "POST", { name: tutor.name, role: "host" })).url;
+const studentLink = (await meet(`/meetings/${m.id}/links`, "POST", { name: student.name })).url;
+// Save m.id with the lesson, and put each link in that person's lesson page or email.</code></pre>
+
+<h2>Errors</h2>
+<pre><code>{ "error": { "code": "invalid_starts_at", "message": "startsAt must be in the next year." } }</code></pre>
+<table>
+  <tr><th>Status</th><th>Meaning</th></tr>
+  <tr><td><code>400</code></td><td>Something in the request isn't valid. <code>code</code> says which field.</td></tr>
+  <tr><td><code>401</code></td><td>Missing or wrong API key.</td></tr>
+  <tr><td><code>402</code></td><td>The account's host subscription isn't active.</td></tr>
+  <tr><td><code>403</code></td><td>Called from a browser on another site, or email not confirmed (for <code>invitees</code>).</td></tr>
+  <tr><td><code>404</code></td><td>No such meeting on this account.</td></tr>
+  <tr><td><code>415</code></td><td>The body must be JSON.</td></tr>
+  <tr><td><code>429</code></td><td>Too many requests (or the daily invitation limit).</td></tr>
+</table>
+<p class="muted">If both sites run on Cloudflare Workers in the same account, a service binding can call these same addresses without going over the internet. The key is still needed.</p>
+</main>
+<script src="/app.js"></script>
+<script src="/auth.js"></script>
+</body></html>
