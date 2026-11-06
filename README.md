@@ -41,7 +41,11 @@ RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing i
   `/developers`). That site's server can create, reschedule, list and cancel meetings (with its own `externalId`, so
   retries never make duplicates) and get **personal join links**: e.g. the tutor as host, the student as guest, each
   with their name filled in and no account needed. Keys are stored only as a hash, can be deleted any time, are rate
-  limited, and only work from a server. Meetings made this way follow the same rules as the dashboard.
+  limited, and only work from a server. The API (and creating keys) needs an active host subscription.
+- **Embedding:** each join link also comes with a ready-made `<iframe>`, so the other site can show the meeting inside
+  its own page. The host lists which websites may do this on the dashboard; meeting pages allow framing only by those
+  sites (and only while the host is subscribed), every other page can't be framed. Inside a frame the meeting hides
+  this site's links and tells the parent page what's happening (`ready`, `joined`, `people`, `left`, `ended`).
 - **Video:** WebRTC mesh: everyone connects to everyone, so 4 people means 3 connections each. **All media is relayed
   through Cloudflare TURN**, so nobody sees anyone's IP address and every call takes the same path. A small Durable
   Object per meeting (`src/room.ts`) only passes the "find each other" messages and chat. Bitrate is lowered

@@ -51,7 +51,7 @@
       if (user.hasCustomer) row.append(el("button", { onclick: portal }, "Billing details"));
       b.append(row);
     }
-    for (const id of ["hostTools", "schedule"]) {
+    for (const id of ["hostTools", "schedule", "apiPanel"]) {
       const p = $("#" + id);
       p.classList.toggle("locked", !user.subscribed);
       p.querySelector(".lockmsg").hidden = user.subscribed;
@@ -202,6 +202,33 @@
     const r = await api(`/api/keys/${k.id}/delete`, {});
     if (r.ok) { toast("Key deleted"); loadKeys(); } else show($("#kmsg"), "error", r.data.error);
   }
+  async function loadOrigins(list) {
+    const origins = list || ((await api("/api/embed-origins")).data.origins || []);
+    const ul = $("#origins");
+    ul.textContent = "";
+    if (!origins.length) ul.append(el("li", { className: "muted small" }, "None yet: meetings only open on this site."));
+    for (const o of origins) {
+      ul.append(el("li", {}, el("div", { className: "mt" }, el("strong", {}, o)),
+        el("div", { className: "row" }, el("button", { className: "linkbtn", onclick: () => removeOrigin(o) }, "Remove"))));
+    }
+  }
+  async function removeOrigin(o) {
+    if (!confirm(`Stop ${o} from showing your meetings? Meetings already open there will stop loading.`)) return;
+    const r = await api("/api/embed-origins/delete", { origin: o });
+    if (r.ok) { toast("Removed"); loadOrigins(r.data.origins); } else show($("#omsg"), "error", r.data.error);
+  }
+  $("#oform").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    show($("#omsg"), "", "");
+    busy($("#obtn"), true);
+    const r = await api("/api/embed-origins", { origin: e.target.origin.value.trim() });
+    busy($("#obtn"), false);
+    if (!r.ok) return show($("#omsg"), "error", r.data.error || "Something went wrong.");
+    e.target.origin.value = "";
+    toast("Allowed");
+    loadOrigins(r.data.origins);
+  });
+
   $("#kform").addEventListener("submit", async (e) => {
     e.preventDefault();
     show($("#kmsg"), "", "");
@@ -248,6 +275,7 @@
     renderUser();
     loadMeetings();
     loadKeys();
+    loadOrigins();
     // Keep "in 5 minutes" / "Live" up to date if the page stays open.
     setInterval(() => { if (!document.querySelector(".meetings form")) loadMeetings(); }, 60_000);
   }
