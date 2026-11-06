@@ -78,3 +78,10 @@ CREATE TABLE IF NOT EXISTS meeting_refs (
   PRIMARY KEY (owner_id, external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_refs_meeting ON meeting_refs (meeting_id);
+
+-- Websites allowed to show this account's meetings inside their own pages (iframe), e.g. https://tutoring.example.com
+CREATE TABLE IF NOT EXISTS embed_origins (
+  user_id INTEGER NOT NULL,
+  origin  TEXT    NOT NULL,
+  PRIMARY KEY (user_id, origin)
+);

@@ -1,14 +1,17 @@
-import { handleApi, sameOrigin } from "./api";
+import { embedOriginsForRoom, handleApi, sameOrigin } from "./api";
 import { verifyJoin } from "./crypto";
 import type { Env } from "./env";
 
 export { RoomDO } from "./room";
 
-function securityHeaders(url: URL): Record<string, string> {
+/**
+ * `embedders`: websites allowed to show this page inside an iframe. Only meeting pages ever have any (the sites the
+ * meeting's owner listed on their dashboard); every other page can't be framed at all.
+ */
+function securityHeaders(url: URL, embedders: string[] = []): Record<string, string> {
   const headers: Record<string, string> = {
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
-    "X-Frame-Options": "DENY",
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
     // Camera, microphone and screen sharing only for this site's own pages.
@@ -27,16 +30,19 @@ function securityHeaders(url: URL): Record<string, string> {
       "object-src 'none'",
       "base-uri 'none'",
       "form-action 'self'",
-      "frame-ancestors 'none'",
+      embedders.length ? `frame-ancestors 'self' ${embedders.join(" ")}` : "frame-ancestors 'none'",
     ].join("; "),
   };
+  // Older browsers only understand X-Frame-Options, which can't list sites: keep it on unless embedding is allowed.
+  if (!embedders.length) headers["X-Frame-Options"] = "DENY";
   if (url.protocol === "https:") headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
   return headers;
 }
 
-function withHeaders(res: Response, url: URL, extra: Record<string, string> = {}): Response {
+function withHeaders(res: Response, url: URL, extra: Record<string, string> = {}, embedders: string[] = []): Response {
   const out = new Response(res.body, res);
-  for (const [k, v] of Object.entries({ ...securityHeaders(url), ...extra })) out.headers.set(k, v);
+  out.headers.delete("X-Frame-Options");
+  for (const [k, v] of Object.entries({ ...securityHeaders(url, embedders), ...extra })) out.headers.set(k, v);
   return out;
 }
 
@@ -88,8 +94,11 @@ export default {
 
     // Meeting links: /m/<12 characters> all use the same room page (it asks the API what the meeting is).
     if (/^\/m\/[a-z2-9]{12}$/.test(path)) {
-      const res = await env.ASSETS.fetch(new Request(new URL("/room", url), request));
-      return withHeaders(res, url, { "Cache-Control": "no-store", "X-Robots-Tag": "noindex" });
+      const [res, embedders] = await Promise.all([
+        env.ASSETS.fetch(new Request(new URL("/room", url), request)),
+        embedOriginsForRoom(env, path.slice(3)).catch(() => [] as string[]),
+      ]);
+      return withHeaders(res, url, { "Cache-Control": "no-store", "X-Robots-Tag": "noindex" }, embedders);
     }
     return withHeaders(await env.ASSETS.fetch(request), url);
   },

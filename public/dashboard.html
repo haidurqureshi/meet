@@ -55,6 +55,8 @@
 
 <section class="panel" id="apiPanel">
   <h2>API keys</h2>
+  <div class="lockmsg" hidden><span>The API is part of the host account.</span><button class="primary" data-subscribe>Become a host</button></div>
+  <div class="lockable">
   <p class="muted">Let another website (for example a booking or tutoring site) create meetings and personal join links on this account. Give the key to that site's developer to keep on their server. <a href="/developers" target="_blank" rel="noopener">API docs for developers</a></p>
   <div id="newKey" class="ok" hidden>
     <p><strong>Copy your new key now.</strong> For your security it won't be shown again.</p>
@@ -63,6 +65,13 @@
   <ul id="keys" class="meetings"></ul>
   <form id="kform" class="row" novalidate><input name="name" maxlength="60" placeholder="What it's for, e.g. Tutoring site" aria-label="Key name"><button class="primary" id="kbtn">Create API key</button></form>
   <div id="kmsg" hidden></div>
+
+  <h3 class="subhead">Websites that can show your meetings</h3>
+  <p class="muted small">Let these sites put your meetings inside their own pages (an iframe), instead of sending people here. Use the site's address exactly as it appears in the browser, e.g. <code>https://tutoring.example.com</code>.</p>
+  <ul id="origins" class="meetings"></ul>
+  <form id="oform" class="row" novalidate><input name="origin" maxlength="200" placeholder="https://tutoring.example.com" aria-label="Website address" autocapitalize="off" spellcheck="false"><button id="obtn">Allow</button></form>
+  <div id="omsg" hidden></div>
+  </div>
 </section>
 
 <section class="panel" id="account">

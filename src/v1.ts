@@ -1,12 +1,13 @@
 // The API other services use (e.g. a tutoring or booking site), version 1. See API.md.
 //
-// Auth: "Authorization: Bearer mk_..." with a key made on the dashboard. Meetings made through the API belong to
-// the key's account and follow the same rules as the dashboard (hosting needs an active subscription; email
-// invitations need a confirmed email and count towards the daily limit). Server-to-server only: never put a key in
+// Auth: "Authorization: Bearer mk_..." with a key made on the dashboard. The whole API needs the key's account to
+// have an active host subscription. Meetings made through the API belong to that account and follow the same rules
+// as the dashboard (email invitations need a confirmed email and count towards the daily limit). Server-to-server only: never put a key in
 // browser code.
 
 import {
   EMAIL_RE,
+  ownerEmbedOrigins,
   body,
   checkInviteAllowed,
   isSubscribed,
@@ -90,7 +91,7 @@ const needsSubscription = (c: Ctx) =>
 /* ---------- endpoints ---------- */
 
 async function account(c: Ctx, k: Key): Promise<Response> {
-  return json({ data: { name: k.user.name, email: k.user.email, subscribed: isSubscribed(c.env, k.user), emailConfirmed: !!k.user.email_verified } });
+  return json({ data: { name: k.user.name, email: k.user.email, subscribed: isSubscribed(c.env, k.user), emailConfirmed: !!k.user.email_verified, embedOrigins: await ownerEmbedOrigins(c.env, k.user.id) } });
 }
 
 async function list(c: Ctx, k: Key): Promise<Response> {
@@ -221,7 +222,12 @@ async function link(c: Ctx, k: Key, id: string): Promise<Response> {
   if (!Number.isFinite(days) || days < 1 || days > 365) return err(400, "invalid_expiry", "expiresInDays must be from 1 to 365.");
   const exp = Date.now() + Math.round(days * 86400_000);
   const token = await signInvite(c.env.SESSION_SECRET, { room: id, name, role, exp });
-  return json({ data: { url: `${meetingUrl(c, id)}?link=${encodeURIComponent(token)}`, name, role, expiresAt: iso(exp) } }, 201);
+  const url = `${meetingUrl(c, id)}?link=${encodeURIComponent(token)}`;
+  const embedUrl = `${url}&embed=1`;
+  // Ready to paste into the other site's page. The "allow" list lets the meeting use the camera, mic and screen share.
+  const iframe = `<iframe src="${embedUrl.replace(/&/g, "&amp;")}" allow="camera; microphone; display-capture; autoplay; fullscreen" allowfullscreen style="width:100%;height:640px;border:0;border-radius:12px" title="Video meeting"></iframe>`;
+  const embedOrigins = await ownerEmbedOrigins(c.env, k.user.id);
+  return json({ data: { url, embedUrl, iframe, embedAllowedOn: embedOrigins, name, role, expiresAt: iso(exp) } }, 201);
 }
 
 /* ---------- router ---------- */
@@ -238,6 +244,8 @@ export async function handleV1(c: Ctx): Promise<Response> {
 
   const auth = await authenticate(c);
   if (auth instanceof Response) return auth;
+  // The API is part of the paid host account.
+  if (!isSubscribed(env, auth.user)) return needsSubscription(c);
   const rl = `api:${auth.keyId}`;
   if (await isLimited(env.DB, rl, 120, 60_000)) return err(429, "rate_limited", "Too many requests. The limit is 120 a minute per key.", { "Retry-After": "60" });
   await recordHit(env.DB, rl);

@@ -312,6 +312,7 @@ async function deleteAccount(c: Ctx, u: UserRow): Promise<Response> {
     db.prepare("DELETE FROM meetings WHERE owner_id = ?1").bind(u.id),
     db.prepare("DELETE FROM meeting_refs WHERE owner_id = ?1").bind(u.id),
     db.prepare("DELETE FROM api_keys WHERE user_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM embed_origins WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM email_tokens WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM users WHERE id = ?1").bind(u.id),
   ]);
@@ -617,6 +618,7 @@ async function roomInfo(c: Ctx, id: string): Promise<Response> {
     userName: link?.name ?? me?.name ?? "",
     nameFixed: !!link,
     maxPeople: rtkConfigured(c.env) ? rtkMax(c.env) : 4,
+    embedOrigins: await ownerEmbedOrigins(c.env, r.ownerId),
     appName: c.env.APP_NAME,
   });
 }
@@ -689,6 +691,7 @@ async function listKeys(c: Ctx, u: UserRow): Promise<Response> {
 }
 
 async function createKey(c: Ctx, u: UserRow): Promise<Response> {
+  if (!isSubscribed(c.env, u)) return subscriptionRequired(c);
   const b = await body(c.req);
   const name = str(b.name, 60) || "API key";
   const n = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?1").bind(u.id).first<{ n: number }>();
@@ -705,6 +708,54 @@ async function createKey(c: Ctx, u: UserRow): Promise<Response> {
 async function deleteKey(c: Ctx, u: UserRow, id: number): Promise<Response> {
   const r = await c.env.DB.prepare("DELETE FROM api_keys WHERE id = ?1 AND user_id = ?2").bind(id, u.id).run();
   return r.meta.changes ? json({ ok: true }) : fail("Key not found.", 404);
+}
+
+/* ---------- embedding meetings in other websites ---------- */
+
+/** "https://site.example" style origin, or null. https only (http is allowed for localhost, for testing). */
+export function normalizeOrigin(v: unknown): string | null {
+  if (typeof v !== "string" || v.length > 200) return null;
+  try {
+    const u = new URL(v.trim());
+    const local = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    if (u.protocol !== "https:" && !(u.protocol === "http:" && local)) return null;
+    if (u.username || u.password || (u.pathname !== "/" && u.pathname !== "") || u.search || u.hash) return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+export async function ownerEmbedOrigins(env: Env, ownerId: number): Promise<string[]> {
+  const r = await env.DB.prepare("SELECT origin FROM embed_origins WHERE user_id = ?1 ORDER BY origin").bind(ownerId).all<{ origin: string }>();
+  return r.results.map((x) => x.origin);
+}
+
+/** For a meeting page: the sites its owner lets show it in an iframe (only while the owner is subscribed). */
+export async function embedOriginsForRoom(env: Env, id: string): Promise<string[]> {
+  const r = await findRoom(env, id);
+  if (!r || !isSubscribed(env, r.owner)) return [];
+  return ownerEmbedOrigins(env, r.ownerId);
+}
+
+async function listEmbedOrigins(c: Ctx, u: UserRow): Promise<Response> {
+  return json({ origins: await ownerEmbedOrigins(c.env, u.id) });
+}
+
+async function addEmbedOrigin(c: Ctx, u: UserRow): Promise<Response> {
+  if (!isSubscribed(c.env, u)) return subscriptionRequired(c);
+  const origin = normalizeOrigin((await body(c.req)).origin);
+  if (!origin) return fail('Enter the website\'s address, like "https://tutoring.example.com" (https, no path).');
+  const n = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM embed_origins WHERE user_id = ?1").bind(u.id).first<{ n: number }>();
+  if ((n?.n ?? 0) >= 10) return fail("You can allow up to 10 websites. Remove one first.");
+  await c.env.DB.prepare("INSERT OR IGNORE INTO embed_origins (user_id, origin) VALUES (?1, ?2)").bind(u.id, origin).run();
+  return json({ origins: await ownerEmbedOrigins(c.env, u.id) });
+}
+
+async function removeEmbedOrigin(c: Ctx, u: UserRow): Promise<Response> {
+  const origin = normalizeOrigin((await body(c.req)).origin);
+  if (origin) await c.env.DB.prepare("DELETE FROM embed_origins WHERE user_id = ?1 AND origin = ?2").bind(u.id, origin).run();
+  return json({ origins: await ownerEmbedOrigins(c.env, u.id) });
 }
 
 /* ---------- router ---------- */
@@ -760,6 +811,9 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   if (path === "/api/billing/portal" && post) return portal(c, u);
   if (path === "/api/personal-room/rotate" && post) return rotatePersonalRoom(c, u);
   if (path === "/api/keys" && req.method === "GET") return listKeys(c, u);
+  if (path === "/api/embed-origins" && req.method === "GET") return listEmbedOrigins(c, u);
+  if (path === "/api/embed-origins" && post) return addEmbedOrigin(c, u);
+  if (path === "/api/embed-origins/delete" && post) return removeEmbedOrigin(c, u);
   if (path === "/api/keys" && post) return createKey(c, u);
   const delKey = /^\/api\/keys\/(\d{1,9})\/delete$/.exec(path);
   if (delKey && post) return deleteKey(c, u, Number(delKey[1]));

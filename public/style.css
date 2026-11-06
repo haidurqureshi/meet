@@ -285,3 +285,13 @@ body.in-call .toast { bottom: calc(5.5rem + env(safe-area-inset-bottom)); }
 .docs th, .docs td { text-align: left; vertical-align: top; padding: .45rem .5rem; border-bottom: 1px solid var(--line); }
 .docs .method { display: inline-block; min-width: 3.6rem; font-weight: 700; }
 .docs .lead { margin-left: 0; margin-right: 0; }
+
+/* shown inside another website's page (iframe) */
+body.embedded #nhome, body.embedded #rcopy, body.embedded #wait .row { display: none; }
+body.embedded .lobby { margin: .75rem auto; }
+body.embedded .card { margin: 1rem auto; }
+.panel .subhead { font-size: 1rem; margin: 1.5rem 0 .2rem; }
+.panel p code { padding: .05rem .3rem; border-radius: 5px; background: var(--soft); font-size: .88em; }
+#oform { flex-wrap: nowrap; }
+#oform input { margin: 0; min-width: 0; flex: 1; }
+#oform button { flex: none; }

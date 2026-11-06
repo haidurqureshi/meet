@@ -11,6 +11,7 @@
 <ol>
   <li>When a lesson is booked, your server <strong>creates a meeting</strong>, passing your own lesson id as <code>externalId</code>.</li>
   <li>It asks for a <strong>join link for each person</strong>: the tutor as <code>"host"</code>, the student as <code>"guest"</code>. Each link opens the meeting with that person's name already filled in. Nobody needs an account here.</li>
+  <li>It shows the meeting <strong>inside its own lesson page</strong> with the <code>iframe</code> that comes with each link, so nobody leaves your site.</li>
   <li>If the lesson moves, <strong>update</strong> the meeting. If it's cancelled, <strong>delete</strong> it. Links already sent keep working for the new time.</li>
 </ol>
 <p>The room opens 15 minutes before the start and closes an hour after the end. People with a host link can go in any time. Hosts can allow or stop each person's mic, camera, screen share and chat during the call.</p>
@@ -20,7 +21,7 @@
 <pre><code>Authorization: Bearer mk_...</code></pre>
 <ul>
   <li><strong>Server-to-server only.</strong> Keep the key in your server's secrets, never in web page or app code. Requests from another site's browser are refused.</li>
-  <li>Meetings belong to the key's account, which needs an active host subscription to create meetings and links (otherwise <code>402</code>).</li>
+  <li>The API is part of the paid host account: every request needs the key's account to have an active host subscription (otherwise <code>402</code>). Meetings made through it belong to that account.</li>
   <li>Limit: 120 requests a minute per key (<code>429</code> with <code>Retry-After</code>).</li>
   <li>Deleting a key on the dashboard stops it straight away.</li>
 </ul>
@@ -84,17 +85,47 @@
 <pre><code>{
   "data": {
     "url": "<span data-origin>https://meet.example.com</span>/m/k3m9xq2vbn7d?link=eyJyb29tIj...",
+    "embedUrl": "<span data-origin>https://meet.example.com</span>/m/k3m9xq2vbn7d?link=eyJyb29tIj...&amp;embed=1",
+    "iframe": "&lt;iframe src=\"...\" allow=\"camera; microphone; display-capture; autoplay; fullscreen\" ...&gt;&lt;/iframe&gt;",
+    "embedAllowedOn": ["https://tutoring.example.com"],
     "name": "Ms Patel",
     "role": "host",
     "expiresAt": "2027-02-04T10:12:00.000Z"
   }
 }</code></pre>
+<p><code>url</code> opens the meeting on this site. <code>embedUrl</code> and <code>iframe</code> are for showing it inside your own page (see below).</p>
 <ul>
   <li><code>name</code>: required, up to 40 characters. Shown to everyone in the call, and can't be changed by the person.</li>
   <li><code>role</code>: <code>"host"</code> (can enter early, and controls who may use their mic, camera, screen share and chat) or <code>"guest"</code> (default).</li>
   <li><code>expiresInDays</code>: 1 to 365, default 90.</li>
   <li>Make links when you need them; there's no limit and nothing is stored. Treat each link like a password for that meeting: send it only to that person. To stop all of a meeting's links, delete the meeting.</li>
 </ul>
+
+<h2>Inside your own page</h2>
+<p>To keep people on your site, put the meeting in an iframe instead of linking to it.</p>
+<ol>
+  <li><strong>Allow your site once.</strong> The account owner adds your site's address (e.g. <code>https://tutoring.example.com</code>) under <em>Websites that can show your meetings</em> on the dashboard. Browsers refuse to show the meeting on any site that isn't listed. <code>embedAllowedOn</code> in the link answer (and in <code>GET /account</code>) shows the current list.</li>
+  <li><strong>Put the <code>iframe</code> from the link answer in the person's lesson page.</strong> It includes the <code>allow</code> list the meeting needs for the camera, microphone and screen sharing; if you write your own iframe, keep that <code>allow</code> attribute. Change the size to suit your page (at least about 360&times;480).</li>
+</ol>
+<pre><code>&lt;iframe src="<span data-origin>https://meet.example.com</span>/m/k3m9xq2vbn7d?link=eyJyb29tIj...&amp;amp;embed=1"
+        allow="camera; microphone; display-capture; autoplay; fullscreen" allowfullscreen
+        style="width:100%;height:640px;border:0;border-radius:12px" title="Video meeting"&gt;&lt;/iframe&gt;</code></pre>
+<p>Use a personal join link in the iframe (not the plain meeting <code>url</code>): browsers don't send logins into iframes, so the link is what makes the tutor the host and fills in each name.</p>
+
+<h3>Events from the meeting</h3>
+<p>The meeting tells your page what's happening with <code>postMessage</code> (only to the sites on the allowed list):</p>
+<pre><code>window.addEventListener("message", (e) =&gt; {
+  if (e.origin !== "<span data-origin>https://meet.example.com</span>" || e.data?.source !== "meet") return;
+  switch (e.data.event) {
+    case "ready":    /* lobby showing: { title, isHost } */ break;
+    case "not_open": /* { status: "early" | "over" | "unavailable", startsAt } */ break;
+    case "joined":   /* they're in the call: { name, isHost } */ break;
+    case "people":   /* { count } people in the call */ break;
+    case "left":     /* they pressed Leave */ break;
+    case "ended":    /* call ended for them: { reason } */ break;
+  }
+});</code></pre>
+<p>Every message also has <code>meeting</code> (the meeting id).</p>
 
 <h3>Reschedule or cancel</h3>
 <pre><code>curl -X PATCH <span data-origin>https://meet.example.com</span>/api/v1/meetings/k3m9xq2vbn7d \
@@ -135,7 +166,7 @@ const studentLink = (await meet(`/meetings/${m.id}/links`, "POST", { name: stude
   <tr><th>Status</th><th>Meaning</th></tr>
   <tr><td><code>400</code></td><td>Something in the request isn't valid. <code>code</code> says which field.</td></tr>
   <tr><td><code>401</code></td><td>Missing or wrong API key.</td></tr>
-  <tr><td><code>402</code></td><td>The account's host subscription isn't active.</td></tr>
+  <tr><td><code>402</code></td><td>The account's host subscription isn't active (needed for every request).</td></tr>
   <tr><td><code>403</code></td><td>Called from a browser on another site, or email not confirmed (for <code>invitees</code>).</td></tr>
   <tr><td><code>404</code></td><td>No such meeting on this account.</td></tr>
   <tr><td><code>415</code></td><td>The body must be JSON.</td></tr>

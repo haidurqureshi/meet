@@ -36,6 +36,18 @@
   } catch { /* storage blocked: the link still works for this page load */ }
   try { key = sessionStorage.getItem(keyName) || ""; } catch { /* storage blocked */ }
 
+  // Shown inside another website's page (an iframe made with the API)? Then hide this site's own links and tell
+  // that page what's happening: {source:"meet", event, meeting, ...}. Only sent to the sites the host allowed.
+  let embedded = false;
+  try { embedded = window.self !== window.top; } catch { embedded = true; }
+  if (embedded) document.body.classList.add("embedded");
+  let lastCount = 0;
+  function tellParent(event, extra) {
+    if (!embedded || !info || !Array.isArray(info.embedOrigins)) return;
+    const msg = { source: "meet", event, meeting: code, ...(extra || {}) };
+    for (const o of info.embedOrigins) { try { window.parent.postMessage(msg, o); } catch { /* ignore */ } }
+  }
+
   const panel = (id) => {
     ["loading", "notice", "lobby", "room"].forEach((p) => ($("#" + p).hidden = p !== id));
     document.body.classList.toggle("in-call", id === "room");
@@ -57,6 +69,7 @@
     if (!r.ok) return notice("Meeting not found", r.data.error || "Check you copied the whole link.");
     info = r.data;
     document.title = info.title;
+    if (info.status !== "open") tellParent("not_open", { status: info.status, startsAt: info.startsAt });
     if (info.status === "unavailable") return notice("Not available", "This meeting can't be started right now. Ask the host to check their account.");
     if (info.status === "over") return notice("Meeting finished", "This meeting has ended. Ask the host for a new link.");
     if (info.status === "early") {
@@ -64,6 +77,7 @@
       return notice("Not open yet", `"${info.title}" starts ${when}. The room opens 15 minutes before. Come back then.`);
     }
     panel("lobby");
+    tellParent("ready", { title: info.title, isHost: !!info.isHost });
     $("#ltitle").textContent = info.title;
     $("#lhost").textContent = info.isHost ? "You're the host" : `Hosted by ${info.hostName}`;
     if (info.maxPeople) $("#lmax").textContent = `Up to ${info.maxPeople} people. Nothing is recorded.`;
@@ -180,6 +194,8 @@
   const meetingLink = () => location.origin + "/m/" + code;
   function enterRoom(name) {
     panel("room");
+    tellParent("joined", { name, isHost: !!join.isHost });
+    if (embedded) $("#wait p").textContent = "Waiting for the others to join…";
     $("#rtitle").textContent = info.title;
     $("#wurl").value = meetingLink();
     $("#wcopy").onclick = $("#rcopy").onclick = () => App.copy(meetingLink()).then(() => toast("Meeting link copied"));
@@ -327,6 +343,7 @@
     vb.querySelector("span").textContent = view === "speaker" ? "Gallery" : "Speaker";
     vb.setAttribute("aria-label", view === "speaker" ? "Switch to gallery view" : "Switch to speaker view");
     $("#rcount").textContent = n === 1 ? "1 here" : n + " here";
+    if (n !== lastCount && !$("#room").hidden) { lastCount = n; tellParent("people", { count: n }); }
     $("#wait").hidden = n > 1;
     applyBitrate();
   }
@@ -869,8 +886,8 @@
     setChat(false);
     setPeople(false);
   }
-  function endCall(title, text, retry) { cleanup(); notice(title, text, retry); }
-  $("#cleave").onclick = () => { cleanup(); notice("You left the meeting", "You can rejoin any time while it's open.", true); };
+  function endCall(title, text, retry) { cleanup(); notice(title, text, retry); tellParent("ended", { reason: title }); }
+  $("#cleave").onclick = () => { cleanup(); notice("You left the meeting", "You can rejoin any time while it's open.", true); tellParent("left"); };
   $("#nretry").onclick = () => location.reload();
   addEventListener("pagehide", () => { if (rtk) rtk.leave().catch(() => {}); if (ws) try { ws.close(1000, "bye"); } catch { /* ignore */ } });
   // If a policy ever blocks something the call needs, say so in the console (helps when setting up RealtimeKit).
