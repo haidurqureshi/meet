@@ -41,16 +41,33 @@
     b.textContent = "";
     if (user.subscribed) {
       const end = user.periodEnd ? fmtDay(user.periodEnd) : null;
-      b.append(el("p", { className: "billing-status" }, el("span", { className: "pill live" }, "Active"), `${user.price}.`, end ? (user.cancelAtEnd ? ` Ends on ${end} (won't renew).` : ` Renews on ${end}.`) : ""));
+      const isPro = user.plan === "pro";
+      b.append(el("p", { className: "billing-status" }, el("span", { className: "pill live" }, isPro ? "Pro" : "Host"), `${isPro ? user.proPrice : user.price}.`, end ? (user.cancelAtEnd ? ` Ends on ${end} (won't renew).` : ` Renews on ${end}.`) : ""));
+      if (!isPro) {
+        b.append(el("div", { className: "upsell" },
+          el("strong", {}, `Upgrade to Pro · ${user.proPrice}`),
+          el("p", { className: "small" }, "Your logo and colours instead of ours, your own link (meet…/your-name), a welcome screen with an agenda, and an after-call page for invoices, bookings or feedback. Your Host plan is cancelled and the unused days are credited."),
+          el("button", { className: "primary", onclick: upgrade }, "Upgrade to Pro")));
+      }
       if (user.hasCustomer) b.append(el("div", { className: "row" }, el("button", { onclick: portal }, "Manage billing or cancel")));
     } else {
       const was = user.subStatus && user.subStatus !== "none";
-      if (was) b.append(el("p", { className: "billing-status" }, el("span", { className: "pill" }, user.subStatus === "past_due" ? "Payment failed" : "Inactive"), "Your host subscription isn't active, so your meeting links won't open."));
-      b.append(el("p", {}, `Hosting meetings costs ${user.price}. Cancel any time. Guests joining your meetings never pay.`));
-      const row = el("div", { className: "row" }, el("button", { className: "primary big", onclick: subscribe }, `Become a host · ${user.price}`));
-      if (user.hasCustomer) row.append(el("button", { onclick: portal }, "Billing details"));
-      b.append(row);
+      if (was) b.append(el("p", { className: "billing-status" }, el("span", { className: "pill" }, user.subStatus === "past_due" ? "Payment failed" : "Inactive"), "Your subscription isn't active, so your meeting links won't open."));
+      b.append(el("p", {}, "Choose a plan. Cancel any time. Guests joining your meetings never pay."));
+      const plan = (name, price, points, onclick, primary) => el("div", { className: "plan" + (primary ? " plan-pro" : "") },
+        el("strong", {}, name), el("div", { className: "plan-price" }, price),
+        el("ul", {}, ...points.map((t) => el("li", {}, t))),
+        el("button", { className: primary ? "primary" : "", onclick }, `Choose ${name}`));
+      b.append(el("div", { className: "plans" },
+        plan("Host", user.price, ["Unlimited meetings", "Personal room, instant and scheduled meetings", "Email invitations", "API for your website"], subscribe, false),
+        plan("Pro", user.proPrice, ["Everything in Host", "Your logo and brand colour", "Your own link: meet…/your-name", "Welcome screen, agenda and a question for guests", "Send guests to your page after the call"], upgrade, true)));
+      if (user.hasCustomer) b.append(el("div", { className: "row" }, el("button", { onclick: portal }, "Billing details")));
     }
+    const proPanel = $("#proPanel");
+    proPanel.classList.toggle("locked", !user.pro);
+    proPanel.querySelector(".lockmsg").hidden = user.pro;
+    proPanel.querySelector(".lockable").inert = !user.pro;
+    document.querySelectorAll("[data-upgrade]").forEach((x) => (x.onclick = upgrade));
     for (const id of ["hostTools", "schedule", "apiPanel"]) {
       const p = $("#" + id);
       p.classList.toggle("locked", !user.subscribed);
@@ -64,16 +81,17 @@
     else dash.insertBefore($("#billing"), $("#hostTools"));
   }
 
-  async function redirectTo(path, btn) {
+  async function redirectTo(path, btn, payload) {
     show($("#bmsg"), "", "");
     busy(btn, true);
-    const r = await api(path, {});
+    const r = await api(path, payload || {});
     if (r.ok && r.data.url) { location.href = r.data.url; return; }
     busy(btn, false);
     show($("#bmsg"), "error", r.data.error || "Something went wrong.");
     $("#billing").scrollIntoView({ behavior: "smooth", block: "center" });
   }
-  const subscribe = (e) => redirectTo("/api/billing/checkout", e && e.currentTarget);
+  const subscribe = (e) => redirectTo("/api/billing/checkout", e && e.currentTarget, { plan: "host" });
+  const upgrade = (e) => redirectTo("/api/billing/checkout", e && e.currentTarget, { plan: "pro" });
   const portal = (e) => redirectTo("/api/billing/portal", e && e.currentTarget);
 
   $("#personalRotate").onclick = async () => {
@@ -183,6 +201,102 @@
     $("#pastBox").hidden = !r.data.past.length;
   }
 
+  /* ---------- Pro settings ---------- */
+  let pro = null;
+  function renderPro() {
+    if (!pro) return;
+    $("#vprefix").textContent = location.host + "/";
+    $("#vcurrent").hidden = !pro.vanity;
+    if (pro.vanity) { $("#vlink").href = pro.vanityUrl; $("#vlink").textContent = pro.vanityUrl.replace(/^https?:\/\//, ""); }
+    $("#vcopy").onclick = () => App.copy(pro.vanityUrl).then(() => toast("Link copied"));
+    $("#logodel").hidden = !pro.logoUrl;
+    const bf = $("#bform");
+    bf.brandName.value = pro.brandName;
+    bf.brandColor.value = pro.brandColor;
+    if (pro.brandColor) $("#bcolorpick").value = pro.brandColor;
+    const wf = $("#wform");
+    wf.welcome.value = pro.welcome;
+    ["agenda1", "agenda2", "agenda3"].forEach((n, i) => (wf[n].value = pro.agenda[i] || ""));
+    wf.intakeQuestion.value = pro.intakeQuestion;
+    wf.redirectUrl.value = pro.redirectUrl;
+    $("#wpreview").href = pro.vanityUrl || "/m/" + user.personalRoom;
+    previewBrand();
+  }
+  function previewBrand() {
+    const color = /^#[0-9a-f]{6}$/i.test($("#bform").brandColor.value) ? $("#bform").brandColor.value : "";
+    $("#bpreview").style.setProperty("--bp", color || "var(--accent)");
+    $("#bplogo").hidden = !(pro && pro.logoUrl);
+    if (pro && pro.logoUrl) $("#bplogo").src = pro.logoUrl;
+    $("#bpname").hidden = !!(pro && pro.logoUrl);
+    $("#bpname").textContent = $("#bform").brandName.value || "Your company";
+  }
+  async function loadPro() {
+    const r = await api("/api/pro/settings");
+    if (r.ok) { pro = r.data.settings; renderPro(); }
+  }
+  $("#bcolorpick").oninput = () => { $("#bform").brandColor.value = $("#bcolorpick").value; previewBrand(); };
+  $("#bform").brandColor.oninput = () => { if (/^#[0-9a-f]{6}$/i.test($("#bform").brandColor.value)) $("#bcolorpick").value = $("#bform").brandColor.value; previewBrand(); };
+  $("#bform").brandName.oninput = previewBrand;
+  $("#bform").onsubmit = (e) => e.preventDefault();
+
+  $("#logofile").onchange = async (e) => {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!/^image\/(png|jpeg|webp)$/.test(f.type)) return toast("Please choose a PNG, JPEG or WebP image");
+    if (f.size > 200 * 1024) return toast("That image is over 200 KB. Please use a smaller one");
+    const res = await fetch("/api/pro/logo", { method: "POST", headers: { "Content-Type": f.type }, body: f, credentials: "same-origin" });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) return toast(d.error || "Couldn't upload the logo");
+    pro = d.settings; renderPro(); toast("Logo uploaded");
+  };
+  $("#logodel").onclick = async () => {
+    const r = await api("/api/pro/logo/delete", {});
+    if (r.ok) { pro = r.data.settings; renderPro(); toast("Logo removed"); }
+  };
+
+  let vTimer = 0;
+  $("#vform").name.oninput = (e) => {
+    const v = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+    if (v !== e.target.value) e.target.value = v;
+    clearTimeout(vTimer);
+    $("#vstate").textContent = "";
+    if (v.length < 3) return;
+    vTimer = setTimeout(async () => {
+      const r = await api("/api/pro/vanity/check?name=" + encodeURIComponent(v));
+      if (r.ok && $("#vform").name.value === v) $("#vstate").textContent = r.data.available ? `✓ ${location.host}/${v} is available` : r.data.reason;
+    }, 300);
+  };
+  $("#vform").onsubmit = async (e) => {
+    e.preventDefault();
+    busy($("#vbtn"), true);
+    const r = await api("/api/pro/vanity", { name: e.target.name.value });
+    busy($("#vbtn"), false);
+    if (!r.ok) { $("#vstate").textContent = r.data.error; return; }
+    e.target.name.value = "";
+    $("#vstate").textContent = "";
+    pro = r.data.settings; renderPro(); toast("Your link is ready");
+  };
+  $("#vrelease").onclick = async () => {
+    if (!confirm("Release your link? Anyone could claim it after you.")) return;
+    const r = await api("/api/pro/vanity", { name: "" });
+    if (r.ok) { pro = r.data.settings; renderPro(); toast("Link released"); }
+  };
+
+  $("#wform").onsubmit = async (e) => {
+    e.preventDefault();
+    const wf = e.target, bf = $("#bform");
+    show($("#wmsg"), "", "");
+    busy($("#wbtn"), true);
+    const r = await api("/api/pro/settings", {
+      brandName: bf.brandName.value, brandColor: bf.brandColor.value.trim(),
+      welcome: wf.welcome.value, agenda: [wf.agenda1.value, wf.agenda2.value, wf.agenda3.value], intakeQuestion: wf.intakeQuestion.value, redirectUrl: wf.redirectUrl.value.trim(),
+    });
+    busy($("#wbtn"), false);
+    if (!r.ok) return show($("#wmsg"), "error", r.data.error || "Something went wrong.");
+    pro = r.data.settings; renderPro(); toast("Pro settings saved");
+  };
+
   /* ---------- API keys ---------- */
   async function loadKeys() {
     const r = await api("/api/keys");
@@ -276,6 +390,7 @@
     loadMeetings();
     loadKeys();
     loadOrigins();
+    loadPro();
     // Keep "in 5 minutes" / "Live" up to date if the page stays open.
     setInterval(() => { if (!document.querySelector(".meetings form")) loadMeetings(); }, 60_000);
   }

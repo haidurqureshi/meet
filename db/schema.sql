@@ -85,3 +85,31 @@ CREATE TABLE IF NOT EXISTS embed_origins (
   origin  TEXT    NOT NULL,
   PRIMARY KEY (user_id, origin)
 );
+
+-- Which plan a subscriber is on: 'host' (the basic plan) or 'pro'. No row means 'host'.
+CREATE TABLE IF NOT EXISTS user_plan (
+  user_id INTEGER PRIMARY KEY,
+  plan    TEXT    NOT NULL CHECK (plan IN ('host', 'pro'))
+);
+
+-- Pro settings: branding, vanity link, waiting room and the page guests go to after the call.
+CREATE TABLE IF NOT EXISTS pro_settings (
+  user_id         INTEGER PRIMARY KEY,
+  vanity          TEXT    UNIQUE,                        -- meet.example.com/<vanity>, lowercase
+  brand_name      TEXT,
+  brand_color     TEXT,                                  -- #rrggbb
+  logo_version    INTEGER NOT NULL DEFAULT 0,            -- 0 = no logo
+  welcome         TEXT,
+  agenda          TEXT,                                  -- JSON array of up to 3 strings
+  intake_question TEXT,
+  redirect_url    TEXT,
+  updated_at      INTEGER NOT NULL
+);
+
+-- Pro logos (PNG, JPEG or WebP, up to 200 KB).
+CREATE TABLE IF NOT EXISTS logos (
+  user_id    INTEGER PRIMARY KEY,
+  mime       TEXT    NOT NULL,
+  data       BLOB    NOT NULL,
+  updated_at INTEGER NOT NULL
+);

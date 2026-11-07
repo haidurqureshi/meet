@@ -24,6 +24,10 @@
     "PRICE_PENCE": "1000",
     // OPTIONAL: a Stripe recurring Price ID (price_...). If set it overrides PRICE_PENCE. Leave "" to charge PRICE_PENCE.
     "STRIPE_PRICE_ID": "",
+    // The Pro plan (branding, vanity link, waiting room, redirect after the call), in pence per month.
+    "PRO_PRICE_PENCE": "1500",
+    // OPTIONAL: a Stripe recurring Price ID for Pro. If set it overrides PRO_PRICE_PENCE.
+    "STRIPE_PRO_PRICE_ID": "",
     // Must be an address on a domain onboarded for Email Sending.
     "EMAIL_FROM": "no-reply@meet.haidurqureshi.com",
     // Cloudflare Realtime TURN key ID (dashboard -> Realtime -> TURN). Not secret.

@@ -1,7 +1,8 @@
 // Meeting room: up to 4 people, every pair connected directly (through Cloudflare TURN relays).
 (function () {
   const { $, api, show, toast } = App;
-  const code = (/^\/m\/([a-z2-9]{12})$/.exec(location.pathname) || [])[1];
+  const vanityMeta = document.querySelector('meta[name="meet-room"]');
+  const code = (/^\/m\/([a-z2-9]{12})$/.exec(location.pathname) || [])[1] || (vanityMeta && /^[a-z2-9]{12}$/.test(vanityMeta.content) ? vanityMeta.content : undefined);
   const keyName = "meet-key-" + code;
   let info = null, join = null, ws = null, localStream = null, screenStream = null;
   let micOn = true, camOn = true, sharing = false, left = false, failures = 0, retryTimer = null, unread = 0;
@@ -57,6 +58,7 @@
     $("#ntitle").textContent = title;
     $("#ntext").textContent = text;
     $("#nretry").hidden = !retry;
+    $("#ngo").hidden = true;
     document.title = title;
   }
   const initials = (name) => (String(name).trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join("") || "?").toUpperCase();
@@ -69,6 +71,7 @@
     if (!r.ok) return notice("Meeting not found", r.data.error || "Check you copied the whole link.");
     info = r.data;
     document.title = info.title;
+    applyBrand(info.brand);
     if (info.status !== "open") tellParent("not_open", { status: info.status, startsAt: info.startsAt });
     if (info.status === "unavailable") return notice("Not available", "This meeting can't be started right now. Ask the host to check their account.");
     if (info.status === "over") return notice("Meeting finished", "This meeting has ended. Ask the host for a new link.");
@@ -86,33 +89,226 @@
     $("#lname").value = info.userName || saved;
     $("#lname").readOnly = !!info.nameFixed;
     $("#lname").title = info.nameFixed ? "Set by your invitation link" : "";
+    showWelcome(info.waiting);
     getMedia().then(() => { if (!$("#lname").value) $("#lname").focus(); else $("#ljoin").focus(); });
   }
 
-  async function getMedia() {
-    if (localStream) return;
-    $("#lnocam").hidden = false;
-    $("#lnocam").textContent = "Starting your camera…";
-    const tries = [
-      { audio: { echoCancellation: true, noiseSuppression: true }, video: { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 24, max: 30 } } },
-      { audio: true, video: false },
-    ];
-    for (const c of tries) {
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia(c);
-        break;
-      } catch (err) { /* try the next, simpler request */ }
+  /* ---------- Pro: the host's branding and waiting room ---------- */
+  function applyBrand(b) {
+    if (!b || (!b.logoUrl && !b.name && !b.color)) return;
+    document.body.classList.add("branded"); // hides this site's own links
+    if (b.color && /^#[0-9a-f]{6}$/i.test(b.color)) {
+      const n = parseInt(b.color.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, bl = n & 255;
+      const light = (0.299 * r + 0.587 * g + 0.114 * bl) / 255 > 0.6;
+      const root = document.documentElement.style;
+      root.setProperty("--accent", b.color);
+      root.setProperty("--accent-hover", `color-mix(in srgb, ${b.color} 82%, ${light ? "black" : "white"})`);
+      root.setProperty("--accent-ink", light ? "#111111" : "#ffffff");
+      root.setProperty("--focus", b.color);
     }
-    if (!localStream) {
+    for (const [box, img, label] of [["#lbrand", "#llogo", "#lbrandname"], ["#nbrand", "#nlogo", "#nbrandname"]]) {
+      $(box).hidden = false;
+      $(img).hidden = !b.logoUrl;
+      if (b.logoUrl) { $(img).src = b.logoUrl; $(img).alt = b.name || ""; }
+      $(label).textContent = b.logoUrl ? "" : b.name || "";
+    }
+    if (b.logoUrl) {
+      $("#rlogo").src = b.logoUrl; $("#rlogo").alt = b.name || ""; $("#rlogo").hidden = false;
+      const icon = document.querySelector('link[rel="icon"]');
+      if (icon) { icon.href = b.logoUrl; icon.removeAttribute("type"); }
+    }
+  }
+
+  let pendingIntake = "";
+  function showWelcome(w) {
+    if (!w || (!w.welcome && !(w.agenda || []).length && !w.intakeQuestion)) return;
+    $("#lwelcome").hidden = !w.welcome && !(w.agenda || []).length;
+    $("#lwelcometext").textContent = w.welcome || "";
+    $("#lwelcometext").hidden = !w.welcome;
+    $("#lagendawrap").hidden = !(w.agenda || []).length;
+    $("#lagenda").textContent = "";
+    for (const item of w.agenda || []) $("#lagenda").append(Object.assign(document.createElement("li"), { textContent: item }));
+    // The host's question: guests answer it before joining. Hosts don't see it here.
+    $("#lintakewrap").hidden = !w.intakeQuestion || !!info.isHost;
+    $("#lintakeq").textContent = w.intakeQuestion || "";
+  }
+
+  /* ---------- pre-call check: camera, microphone and speakers ---------- */
+  const VIDEO = { width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 24, max: 30 } };
+  const AUDIO = { echoCancellation: true, noiseSuppression: true };
+  let camErr = null, micErr = null, heardMic = false, meterRaf = 0, meterCtx = null;
+  const savedDevice = (k) => { try { return localStorage.getItem(k) || ""; } catch { return ""; } };
+
+  async function getMedia(chosen) {
+    if (localStream && !chosen) return;
+    const camId = (chosen && chosen.cam) || savedDevice("meet-cam");
+    const micId = (chosen && chosen.mic) || savedDevice("meet-mic");
+    if (localStream) localStream.getTracks().forEach((t) => t.stop());
+    localStream = null; camErr = micErr = null; heardMic = false;
+    setCheck("checking");
+    const video = { ...VIDEO, ...(camId ? { deviceId: chosen && chosen.cam ? { exact: camId } : { ideal: camId } } : {}) };
+    const audio = { ...AUDIO, ...(micId ? { deviceId: chosen && chosen.mic ? { exact: micId } : { ideal: micId } } : {}) };
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      camErr = micErr = { name: "Insecure" };
       localStream = new MediaStream();
-      $("#lnocam").textContent = "No camera or microphone. Check the browser's permission (the icon in the address bar) and reload. You can still watch and chat.";
-      show($("#lmsg"), "error", "We couldn't use your camera or microphone, so others won't see or hear you.");
     } else {
-      if (!localStream.getVideoTracks().length) $("#lnocam").textContent = "No camera found. You'll join with sound only.";
-      else $("#lnocam").hidden = true;
-      $("#lpreview").srcObject = localStream;
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio, video });
+      } catch (both) {
+        // Find out which one is the problem, and keep whichever works.
+        let a = null, v = null;
+        try { a = await navigator.mediaDevices.getUserMedia({ audio }); } catch (e) { micErr = e; }
+        try { v = await navigator.mediaDevices.getUserMedia({ video }); } catch (e) { camErr = e; }
+        localStream = new MediaStream([...(a ? a.getTracks() : []), ...(v ? v.getTracks() : [])]);
+      }
     }
+    // Some browsers report a block with a vague error: their permission status says what really happened.
+    for (const [kind, set] of [["camera", (e) => (camErr = e)], ["microphone", (e) => (micErr = e)]]) {
+      const err = kind === "camera" ? camErr : micErr;
+      if (!err || blocked(err)) continue;
+      try { if ((await navigator.permissions.query({ name: kind })).state === "denied") set({ name: "NotAllowedError" }); } catch { /* not supported */ }
+    }
+    if (!localStream.getVideoTracks().length && !camErr) camErr = { name: "NotFoundError" };
+    if (!localStream.getAudioTracks().length && !micErr) micErr = { name: "NotFoundError" };
+    $("#lpreview").srcObject = localStream;
+    $("#lnocam").hidden = !!localStream.getVideoTracks().length;
+    $("#lnocam").textContent = camErr ? "Your camera isn't on. See below." : "";
+    await fillDevices();
+    startMeter();
+    setCheck();
     syncButtons();
+  }
+
+  async function fillDevices() {
+    let list = [];
+    try { list = await navigator.mediaDevices.enumerateDevices(); } catch { return; }
+    for (const [sel, kind, track] of [["#selcam", "videoinput", videoTrack()], ["#selmic", "audioinput", audioTrack()]]) {
+      const devs = list.filter((d) => d.kind === kind && d.deviceId);
+      const el = $(sel);
+      el.textContent = "";
+      devs.forEach((d, i) => el.append(Object.assign(document.createElement("option"), { value: d.deviceId, textContent: d.label || `${kind === "videoinput" ? "Camera" : "Microphone"} ${i + 1}` })));
+      const current = track && track.getSettings ? track.getSettings().deviceId : "";
+      if (current) el.value = current;
+      el.hidden = devs.length < 2 || !track;
+    }
+  }
+  $("#selcam").onchange = () => { try { localStorage.setItem("meet-cam", $("#selcam").value); } catch { /* ignore */ } getMedia({ cam: $("#selcam").value }); };
+  $("#selmic").onchange = () => { try { localStorage.setItem("meet-mic", $("#selmic").value); } catch { /* ignore */ } getMedia({ mic: $("#selmic").value }); };
+  $("#lretry").onclick = () => getMedia({});
+
+  /** Live microphone level, so people can see they're being heard. */
+  function startMeter() {
+    cancelAnimationFrame(meterRaf);
+    const track = audioTrack();
+    if (!track || !window.AudioContext) return;
+    try {
+      meterCtx = meterCtx || new AudioContext();
+      const an = meterCtx.createAnalyser();
+      an.fftSize = 512;
+      meterCtx.createMediaStreamSource(new MediaStream([track])).connect(an);
+      const buf = new Uint8Array(an.fftSize);
+      const tick = () => {
+        if ($("#lobby").hidden) return;
+        if (meterCtx.state === "suspended") meterCtx.resume().catch(() => {});
+        an.getByteTimeDomainData(buf);
+        let peak = 0;
+        for (const x of buf) peak = Math.max(peak, Math.abs(x - 128));
+        $("#micbar").style.width = Math.min(100, peak * 1.6) + "%";
+        if (peak > 10 && micOn && !heardMic) { heardMic = true; setCheck(); }
+        meterRaf = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch { /* no meter: the check still works */ }
+  }
+
+  $("#spktest").onclick = () => {
+    try {
+      meterCtx = meterCtx || new AudioContext();
+      meterCtx.resume();
+      const o = meterCtx.createOscillator(), g = meterCtx.createGain(), t = meterCtx.currentTime;
+      o.frequency.value = 660;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.25, t + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+      o.connect(g).connect(meterCtx.destination);
+      o.start(t); o.stop(t + 0.75);
+      setRow("#ckspk", "ok", "Did you hear a beep? If not, check your volume or headphones.");
+    } catch { setRow("#ckspk", "warn", "Your browser couldn't play a sound."); }
+  };
+
+  function setRow(id, state, text) {
+    const li = $(id);
+    li.className = "ck s-" + state;
+    li.querySelector(".ckstate").textContent = text;
+  }
+
+  const blocked = (e) => e && (e.name === "NotAllowedError" || e.name === "SecurityError" || e.name === "PermissionDeniedError");
+  const busy = (e) => e && (e.name === "NotReadableError" || e.name === "TrackStartError" || e.name === "AbortError");
+  function errText(e, what) {
+    if (!e) return "";
+    if (blocked(e)) return `Blocked by your browser`;
+    if (busy(e)) return `Being used by another app`;
+    if (e.name === "Insecure") return "Needs a secure (https) connection";
+    return `No ${what} found`;
+  }
+
+  /** The browser-specific way to unblock the camera and microphone. */
+  function unblockGuide() {
+    const ua = navigator.userAgent;
+    const ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    if (ios) return { side: "left", steps: ["Tap <b>aA</b> on the left of the address bar, then <b>Website Settings</b>.", "Set <b>Camera</b> and <b>Microphone</b> to <b>Allow</b>.", "Tap <b>Try again</b> below."] };
+    if (/Android/.test(ua)) return { side: "left", steps: ["Tap the icon on the left of the address bar, then <b>Permissions</b>.", "Turn on <b>Camera</b> and <b>Microphone</b>.", "Tap <b>Try again</b> below."] };
+    if (/Firefox\//.test(ua)) return { side: "left", steps: ["Click the crossed-out camera icon on the <b>left</b> of the address bar.", "Click the <b>✕</b> next to <b>Blocked</b> for the camera and microphone.", "Click <b>Try again</b> below and choose <b>Allow</b>."] };
+    if (/Safari\//.test(ua) && !/Chrome|Chromium|Edg\//.test(ua)) return { side: "left", steps: ["In the menu bar, choose <b>Safari › Settings for This Website…</b>", "Set <b>Camera</b> and <b>Microphone</b> to <b>Allow</b>.", "Click <b>Try again</b> below."] };
+    return { side: "right", steps: ["Click the camera icon with a red cross on the <b>right</b> of the address bar.", "Choose <b>Always allow</b>, then <b>Done</b>.", "Click <b>Try again</b> below."] };
+  }
+
+  function setCheck(phase) {
+    const ready = $("#lready");
+    if (phase === "checking") {
+      ready.className = "lready s-checking";
+      $("#lreadytitle").textContent = "Checking your camera and microphone…";
+      $("#lreadytext").textContent = "";
+      setRow("#ckcam", "checking", "Checking…");
+      setRow("#ckmic", "checking", "Checking…");
+      $("#lfix").hidden = true;
+      return;
+    }
+    setRow("#ckcam", camErr ? "bad" : "ok", camErr ? errText(camErr, "camera") : "Working");
+    setRow("#ckmic", micErr ? "bad" : heardMic ? "ok" : "ok", micErr ? errText(micErr, "microphone") : heardMic ? "Working: we can hear you" : "Working: say something to test it");
+    const fix = $("#lfix");
+    const anyBlocked = blocked(camErr) || blocked(micErr), anyBusy = busy(camErr) || busy(micErr);
+    if (!camErr && !micErr) {
+      ready.className = "lready s-ok";
+      $("#lreadytitle").textContent = "You're all set";
+      $("#lreadytext").textContent = "Your camera and microphone are working.";
+    } else if (!micErr) {
+      ready.className = "lready s-warn";
+      $("#lreadytitle").textContent = "Ready, with sound only";
+      $("#lreadytext").textContent = "Others will hear you but won't see you.";
+    } else {
+      ready.className = "lready s-bad";
+      $("#lreadytitle").textContent = "We can't use your microphone";
+      $("#lreadytext").textContent = "Others won't hear you. You can still join, watch and chat.";
+    }
+    fix.hidden = !(anyBlocked || anyBusy || (camErr && camErr.name === "Insecure"));
+    if (fix.hidden) return;
+    const what = (blocked(camErr) || busy(camErr)) && (blocked(micErr) || busy(micErr)) ? "camera and microphone" : blocked(camErr) || busy(camErr) ? "camera" : "microphone";
+    let steps, side = "none";
+    if (anyBlocked) {
+      $("#lfixtitle").textContent = `Your browser is blocking the ${what}`;
+      const g = unblockGuide();
+      steps = g.steps; side = g.side;
+    } else if (anyBusy) {
+      $("#lfixtitle").textContent = `Your ${what} is being used by another app`;
+      steps = ["Close other apps that might be using it (Zoom, Teams, FaceTime, Skype) or other browser tabs with a call.", "Click <b>Try again</b> below."];
+    } else {
+      $("#lfixtitle").textContent = "This page needs a secure connection";
+      steps = ["Open the meeting link starting with <b>https://</b>."];
+    }
+    $("#lfixvisual").setAttribute("class", "fixvisual side-" + side);
+    $("#lfixhost").textContent = location.host;
+    $("#lfixsteps").innerHTML = steps.map((t) => `<li>${t}</li>`).join(""); // fixed text above, nothing from users
   }
 
   const audioTrack = () => localStream && localStream.getAudioTracks()[0];
@@ -174,6 +370,7 @@
     App.busy($("#ljoin"), true);
     show($("#lmsg"), "", "");
     if (!info.nameFixed) try { localStorage.setItem("meet-name", name); } catch { /* ignore */ }
+    pendingIntake = $("#lintakewrap").hidden ? "" : $("#lintake").value.trim().slice(0, 500);
     const ok = await fetchJoin(name);
     App.busy($("#ljoin"), false);
     if (ok) enterRoom(name);
@@ -191,7 +388,7 @@
   }
 
   /* ---------- room UI ---------- */
-  const meetingLink = () => location.origin + "/m/" + code;
+  const meetingLink = () => location.origin + (vanityMeta ? location.pathname.replace(/\/$/, "") : "/m/" + code);
   function enterRoom(name) {
     panel("room");
     tellParent("joined", { name, isHost: !!join.isHost });
@@ -420,11 +617,12 @@
     ws = new WebSocket(`${proto}//${location.host}/ws?token=${encodeURIComponent(join.token)}`);
     const mine = ws;
     let pingTimer;
-    ws.onopen = () => { failures = 0; setState(""); pingTimer = setInterval(() => { if (mine.readyState === 1) mine.send("ping"); }, 25000); };
+    ws.onopen = () => { failures = 0; setState(""); if (pendingIntake) { mine.send(JSON.stringify({ type: "intake", text: pendingIntake })); pendingIntake = ""; } pingTimer = setInterval(() => { if (mine.readyState === 1) mine.send("ping"); }, 25000); };
     ws.onmessage = (e) => { if (e.data === "pong") return; let m; try { m = JSON.parse(e.data); } catch { return; } onMessage(m); };
     ws.onclose = async (e) => {
       clearInterval(pingTimer);
       if (mine !== ws || left) return;
+      if (e.code === 4003) return hostEnded();
       if (e.code === 4001) return endCall("Opened somewhere else", "You joined this meeting from another window or device, so this one was disconnected.");
       if (e.code === 4002) return endCall("Meeting is full", "This meeting already has 4 people. Ask the host, or try again when someone leaves.");
       failures++;
@@ -476,6 +674,8 @@
       toast(m.perm === "chat" ? "The host has turned off chat for you" : "The host hasn't allowed that");
     } else if (m.type === "chat") {
       addChat(m.name, m.text, false);
+    } else if (m.type === "ended") {
+      hostEnded();
     } else if (m.type === "full") {
       endCall("Meeting is full", `This meeting already has ${m.max || 4} people.`);
     }
@@ -726,7 +926,14 @@
     ["chat", "Chat", "#i-chat", "chat"],
   ];
 
+  const seenIntakes = new Map();
   function onRoster(m) {
+    for (const p of Array.isArray(m.people) ? m.people : []) {
+      if (p.intake && seenIntakes.get(p.id) !== p.intake) {
+        seenIntakes.set(p.id, p.intake);
+        if (amHost()) toast(`${p.name || "A guest"}: “${p.intake.length > 80 ? p.intake.slice(0, 80) + "…" : p.intake}”`);
+      }
+    }
     roster = { defaults: { ...ALL, ...(m.defaults || {}) }, people: Array.isArray(m.people) ? m.people : [] };
     const me = roster.people.find((p) => p.id === pid);
     const before = myAllow;
@@ -796,6 +1003,7 @@
       const tags = [p.id === pid ? "you" : "", p.host ? "host" : ""].filter(Boolean).join(", ");
       if (tags) n.append(Object.assign(document.createElement("small"), { textContent: `(${tags})` }));
       li.append(n);
+      if (host && p.intake) li.append(Object.assign(document.createElement("blockquote"), { className: "pintake", textContent: p.intake }));
       if (host && !p.host) {
         const row = document.createElement("div"); row.className = "pperms";
         for (const [perm, label, icon, words] of PERM_INFO) row.append(permButton(p.id, perm, label, icon, p.allow[perm], words, p.name || "Guest"));
@@ -887,7 +1095,54 @@
     setPeople(false);
   }
   function endCall(title, text, retry) { cleanup(); notice(title, text, retry); tellParent("ended", { reason: title }); }
-  $("#cleave").onclick = () => { cleanup(); notice("You left the meeting", "You can rejoin any time while it's open.", true); tellParent("left"); };
+  function leaveNow() { cleanup(); notice("You left the meeting", "You can rejoin any time while it's open.", true); tellParent("left"); }
+  // Hosts choose: just leave, or end the meeting for everyone (guests then go to the host's after-call page, if set).
+  $("#cleave").onclick = (e) => {
+    if (!amHost()) return leaveNow();
+    e.stopPropagation();
+    $("#leavemenu").hidden = !$("#leavemenu").hidden;
+    if (!$("#leavemenu").hidden) $("#lmleave").focus();
+  };
+  $("#lmleave").onclick = () => { $("#leavemenu").hidden = true; leaveNow(); };
+  $("#lmend").onclick = () => {
+    $("#leavemenu").hidden = true;
+    send({ type: "end" });
+    setTimeout(() => {
+      cleanup();
+      notice("You ended the meeting", info.redirectUrl ? "Everyone else has been sent to your after-call page." : "Everyone has been disconnected.", true);
+      tellParent("ended", { reason: "you_ended" });
+    }, 150); // give the message a moment to go out
+  };
+  addEventListener("click", (e) => { if (!$("#leavemenu").hidden && !e.target.closest("#leavemenu")) $("#leavemenu").hidden = true; });
+
+  function hostEnded() {
+    if (left) return;
+    cleanup();
+    const url = info && info.redirectUrl;
+    tellParent("ended", { reason: "host_ended", redirectUrl: url || undefined });
+    if (!url) return notice("The meeting has ended", "The host ended the meeting for everyone.");
+    let where = "the next page";
+    try { where = new URL(url).hostname; } catch { /* ignore */ }
+    notice("The meeting has ended", `Thanks for joining. Taking you to ${where}…`);
+    const go = $("#ngo");
+    go.href = url;
+    go.hidden = false;
+    go.textContent = "Continue";
+    if (embedded) {
+      // Inside another site's page: open it over that page when they click (pages like Stripe can't load in a frame).
+      go.target = "_top";
+      $("#ntext").textContent = `Thanks for joining. Continue to ${where}.`;
+      return;
+    }
+    let n = 3;
+    const tick = () => {
+      if (n <= 0) { location.href = url; return; }
+      $("#ntext").textContent = `Thanks for joining. Taking you to ${where} in ${n}…`;
+      n--;
+      setTimeout(tick, 1000);
+    };
+    tick();
+  }
   $("#nretry").onclick = () => location.reload();
   addEventListener("pagehide", () => { if (rtk) rtk.leave().catch(() => {}); if (ws) try { ws.close(1000, "bye"); } catch { /* ignore */ } });
   // If a policy ever blocks something the call needs, say so in the console (helps when setting up RealtimeKit).

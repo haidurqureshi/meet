@@ -172,6 +172,7 @@ const studentLink = (await meet(`/meetings/${m.id}/links`, "POST", { name: stude
   <tr><td><code>415</code></td><td>The body must be JSON.</td></tr>
   <tr><td><code>429</code></td><td>Too many requests (or the daily invitation limit).</td></tr>
 </table>
+<p>On the <strong>Pro</strong> plan, meetings made through the API use the account's branding, waiting room and after-call page automatically. In an iframe, when the host ends the meeting the <code>ended</code> event includes <code>redirectUrl</code>, so your page can send the person there itself.</p>
 <p class="muted">If both sites run on Cloudflare Workers in the same account, a service binding can call these same addresses without going over the internet. The key is still needed.</p>
 </main>
 <script src="/app.js"></script>

@@ -53,6 +53,56 @@
   <details id="pastBox"><summary>Past meetings</summary><ul id="past" class="meetings"></ul></details>
 </section>
 
+<section class="panel" id="proPanel">
+  <h2>Pro: your brand, your link, your waiting room</h2>
+  <div class="lockmsg" hidden><span>Look like your own business: your logo and colours, your own link, a welcome screen and an after-call page.</span><button class="primary" data-upgrade>Upgrade to Pro</button></div>
+  <div class="lockable">
+    <h3 class="subhead">Your link</h3>
+    <p class="muted small">A short, permanent address for your personal room. Claim it before someone else does.</p>
+    <form id="vform" class="row nogap vanity" novalidate>
+      <span class="vprefix" id="vprefix">meet.example.com/</span><input name="name" maxlength="30" placeholder="your-name" autocapitalize="off" spellcheck="false" aria-label="Your link name"><button id="vbtn" class="primary">Claim</button>
+    </form>
+    <p id="vstate" class="small muted" aria-live="polite"></p>
+    <div id="vcurrent" class="row" hidden><a id="vlink" target="_blank" rel="noopener"></a><button id="vcopy" type="button" class="smallbtn">Copy</button><button id="vrelease" type="button" class="linkbtn">Release</button></div>
+
+    <h3 class="subhead">Branding</h3>
+    <p class="muted small">Shown to guests instead of this site's look: on the join screen, in the call and at the end.</p>
+    <div class="brandgrid">
+      <div>
+        <label>Logo <span class="hint">PNG, JPEG or WebP, up to 200 KB. A wide logo on a transparent background works best.</span></label>
+        <div class="row"><label class="btn filebtn"><input type="file" id="logofile" accept="image/png,image/jpeg,image/webp">Upload logo</label><button type="button" id="logodel" class="linkbtn" hidden>Remove</button></div>
+        <form id="bform" novalidate>
+          <label>Company name<input name="brandName" maxlength="60" placeholder="Acme Coaching"></label>
+          <label>Brand colour</label>
+          <div class="row nogap colorrow"><input type="color" id="bcolorpick" value="#9dd8ec" aria-label="Pick a colour"><input name="brandColor" maxlength="7" placeholder="#1d4ed8" aria-label="Colour code"></div>
+        </form>
+      </div>
+      <div class="brandpreview" id="bpreview" aria-label="Preview">
+        <div class="bp-logo"><img id="bplogo" alt="" hidden><span id="bpname">Your company</span></div>
+        <div class="bp-title">Coaching session</div>
+        <div class="bp-check"><span class="bp-tick"></span>You're all set</div>
+        <span class="bp-btn" id="bpbtn">Join now</span>
+      </div>
+    </div>
+
+    <h3 class="subhead">Waiting room</h3>
+    <p class="muted small">Shown on the join screen, so guests arrive prepared.</p>
+    <form id="wform" novalidate>
+      <label>Welcome message<textarea name="welcome" rows="3" maxlength="600" placeholder="Welcome! I'll be with you in a moment. Grab a glass of water and a notebook."></textarea></label>
+      <label>Agenda <span class="hint">Up to 3 points.</span></label>
+      <input name="agenda1" maxlength="120" placeholder="1. Review last week's goals">
+      <input name="agenda2" maxlength="120" placeholder="2. Today's main topic">
+      <input name="agenda3" maxlength="120" placeholder="3. Next steps">
+      <label>Question for guests <span class="hint">Optional. Their answer is shown only to you.</span><input name="intakeQuestion" maxlength="200" placeholder="What would you like to focus on in today's call?"></label>
+
+      <h3 class="subhead">After the call</h3>
+      <label>Send guests to this page when you end the meeting <span class="hint">Optional. A full https address: an invoice, a booking page or a feedback form. You end the meeting with Leave, then "End meeting for everyone".</span><input name="redirectUrl" maxlength="500" placeholder="https://calendly.com/you/next-session" inputmode="url"></label>
+      <div id="wmsg" hidden></div>
+      <div class="row"><button class="primary" id="wbtn">Save Pro settings</button><a id="wpreview" class="btn" target="_blank" rel="noopener">Open my room</a></div>
+    </form>
+  </div>
+</section>
+
 <section class="panel" id="apiPanel">
   <h2>API keys</h2>
   <div class="lockmsg" hidden><span>The API is part of the host account.</span><button class="primary" data-subscribe>Become a host</button></div>

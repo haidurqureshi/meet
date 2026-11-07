@@ -17,6 +17,8 @@ import { addRtkParticipant, createRtkMeeting, rtkConfigured, rtkMax } from "./re
 //                  {type:"upgrade"}  {type:"roster", defaults, people:[{id,name,host,allow}]}  {type:"denied", perm}
 // From the browser: {type:"signal", to, data}  {type:"chat", text}
 //                   {type:"perm", target: <id>|"*", perm: "mic"|"cam"|"share"|"chat", allow} (host only)
+//                   {type:"intake", text}  a guest's answer to the host's waiting-room question (only hosts see it)
+//                   {type:"end"}  (host only) ends the meeting for everyone: they're sent {type:"ended"}
 //
 // Permissions: the host can allow or stop each person's mic, camera, screen share and chat, or set the default for
 // everyone ("*"). The host is never restricted. Chat is enforced here; for media, the person's own page switches it
@@ -120,7 +122,10 @@ export class RoomDO extends DurableObject<Env> {
       list.push({ id: p.pid, name: p.name, host: p.host, allow: p.host ? ALL_ALLOWED : { ...defaults, ...(people[p.pid] ?? {}) } });
     }
     const out = JSON.stringify({ type: "roster", defaults, people: list });
-    for (const w of this.open()) w.send(out);
+    // Hosts also see each guest's answer to the waiting-room question; guests never see each other's.
+    const intakes = (await this.ctx.storage.get<Record<string, string>>("intakes")) ?? {};
+    const forHosts = JSON.stringify({ type: "roster", defaults, people: list.map((p) => (intakes[p.id] ? { ...p, intake: intakes[p.id] } : p)) });
+    for (const w of this.open()) w.send(this.who(w)?.host ? forHosts : out);
   }
 
   private async setPerm(target: string, perm: Perm, allow: boolean): Promise<void> {
@@ -216,6 +221,25 @@ export class RoomDO extends DurableObject<Env> {
     if (msg.type === "signal" && typeof msg.to === "string" && msg.to !== me.pid && msg.data && typeof msg.data === "object") {
       const out = JSON.stringify({ type: "signal", from: me.pid, data: msg.data });
       for (const w of this.ctx.getWebSockets(msg.to)) if (w.readyState === WebSocket.OPEN) w.send(out);
+    } else if (msg.type === "intake" && typeof msg.text === "string") {
+      const text = msg.text.trim().slice(0, 500);
+      if (!text || me.host) return;
+      const intakes = (await this.ctx.storage.get<Record<string, string>>("intakes")) ?? {};
+      intakes[me.pid] = text;
+      await this.ctx.storage.put("intakes", intakes);
+      await this.sendRoster();
+    } else if (msg.type === "end") {
+      if (!me.host) return;
+      const out = JSON.stringify({ type: "ended" });
+      for (const w of this.open()) {
+        if (w === ws) continue;
+        try {
+          w.send(out);
+          w.close(4003, "ended");
+        } catch {
+          /* already closed */
+        }
+      }
     } else if (msg.type === "perm") {
       if (!me.host) return;
       if (typeof msg.target !== "string" || typeof msg.allow !== "boolean" || !PERMS.includes(msg.perm as Perm)) return;
@@ -253,6 +277,6 @@ export class RoomDO extends DurableObject<Env> {
     if (this.open().length) await this.sendRoster();
     // Everyone has gone: the next call in this room starts as a direct (mesh) call again.
     // The RealtimeKit meeting id is kept, so a later large call reuses the same meeting.
-    if (this.open().length === 0) await this.ctx.storage.delete(["mode", "permPeople"]);
+    if (this.open().length === 0) await this.ctx.storage.delete(["mode", "permPeople", "intakes"]);
   }
 }
