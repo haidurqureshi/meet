@@ -15,6 +15,8 @@ export interface Env {
   APP_NAME: string;
   PUBLIC_URL?: string; // the site's address, e.g. https://meet.example.com (used for links in emails and API answers)
   PRICE_PENCE: string;
+  PRO_PRICE_PENCE?: string;
+  STRIPE_PRO_PRICE_ID?: string;
   STRIPE_PRICE_ID?: string;
   EMAIL_FROM?: string;
   TURN_KEY_ID?: string;

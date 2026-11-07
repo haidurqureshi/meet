@@ -1,4 +1,5 @@
-import { embedOriginsForRoom, handleApi, sameOrigin } from "./api";
+import { embedOriginsForRoom, handleApi, ownerEmbedOrigins, sameOrigin } from "./api";
+import { resolveVanity, serveLogo, VANITY_RE } from "./pro";
 import { verifyJoin } from "./crypto";
 import type { Env } from "./env";
 
@@ -90,6 +91,30 @@ export default {
         });
       }
       return withHeaders(res, url);
+    }
+
+    // Pro logos.
+    const logo = /^\/brand\/(\d{1,9})\/logo$/.exec(path);
+    if (logo && request.method === "GET") {
+      const res = withHeaders(await serveLogo(env, Number(logo[1])), url);
+      res.headers.set("Content-Security-Policy", "default-src 'none'; sandbox"); // an image never runs anything
+      return res;
+    }
+
+    // Pro vanity links: /<name> is that host's personal room. The room page learns which room from a meta tag.
+    const vanity = /^\/([a-z0-9-]{3,30})\/?$/.exec(path);
+    if (vanity && VANITY_RE.test(vanity[1]) && request.method === "GET") {
+      const v = await resolveVanity(env, vanity[1]).catch(() => null);
+      if (v) {
+        const [page, embedders] = await Promise.all([
+          env.ASSETS.fetch(new Request(new URL("/room", url), request)),
+          ownerEmbedOrigins(env, v.ownerId).catch(() => [] as string[]),
+        ]);
+        const res = new HTMLRewriter()
+          .on("head", { element: (el) => { el.append(`<meta name="meet-room" content="${v.room}">`, { html: true }); } })
+          .transform(page);
+        return withHeaders(res, url, { "Cache-Control": "no-store", "X-Robots-Tag": "noindex" }, embedders);
+      }
     }
 
     // Meeting links: /m/<12 characters> all use the same room page (it asks the API what the meeting is).

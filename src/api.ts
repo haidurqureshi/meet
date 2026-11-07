@@ -18,13 +18,18 @@ import { formatWhen, inviteEmail, passwordChangedEmail, resetEmail, sendEmail, v
 import type { Env } from "./env";
 import { getIce } from "./ice";
 import { handleV1 } from "./v1";
+import { handlePro, proForRoom } from "./pro";
 import { rtkConfigured, rtkMax } from "./realtimekit";
 import { clearHits, isLimited, recordHit } from "./ratelimit";
 import {
+  cancelSubscriptionNow,
   createPortalSession,
   createSubscriptionCheckout,
   periodEndMs,
+  planOf,
   pricePence,
+  proPricePence,
+  type Plan,
   retrieveCheckout,
   retrieveSubscription,
   verifyWebhook,
@@ -43,7 +48,11 @@ export type UserRow = {
   sub_status: string;
   sub_period_end: number | null;
   sub_cancel_at_end: number;
+  plan: Plan; // from user_plan; "host" when there's no row
 };
+
+/** Loads a user with their plan. */
+const USER_SQL = "SELECT u.*, COALESCE(p.plan, 'host') AS plan FROM users u LEFT JOIN user_plan p ON p.user_id = u.id";
 
 export type Ctx = { req: Request; env: Env; url: URL; wait: (p: Promise<unknown>) => void };
 
@@ -94,7 +103,7 @@ async function getUser(c: Ctx): Promise<UserRow | null> {
   if (!c.env.SESSION_SECRET) return null;
   const s = await readSession(c.env.SESSION_SECRET, readCookie(c.req, SESSION_COOKIE));
   if (!s) return null;
-  const row = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?1").bind(s.id).first<UserRow>();
+  const row = await c.env.DB.prepare(`${USER_SQL} WHERE u.id = ?1`).bind(s.id).first<UserRow>();
   if (!row || (await passwordFingerprint(row.password_hash)) !== s.fp) return null;
   return row;
 }
@@ -102,9 +111,19 @@ async function getUser(c: Ctx): Promise<UserRow | null> {
 export const isSubscribed = (env: Env, u: Pick<UserRow, "sub_status">) =>
   env.DEV_SKIP_BILLING === "1" || u.sub_status === "active" || u.sub_status === "trialing";
 
-export function priceLabel(env: Env): string {
-  const p = pricePence(env) / 100;
+/** Pro: an active subscription on the Pro plan. */
+export const isPro = (env: Env, u: Pick<UserRow, "sub_status" | "plan">) =>
+  env.DEV_SKIP_BILLING === "1" || ((u.sub_status === "active" || u.sub_status === "trialing") && u.plan === "pro");
+
+const poundsMonth = (pence: number) => {
+  const p = pence / 100;
   return `£${Number.isInteger(p) ? p : p.toFixed(2)}/month`;
+};
+export function priceLabel(env: Env): string {
+  return poundsMonth(pricePence(env));
+}
+export function proPriceLabel(env: Env): string {
+  return poundsMonth(proPricePence(env));
 }
 
 function publicUser(env: Env, u: UserRow) {
@@ -119,7 +138,10 @@ function publicUser(env: Env, u: UserRow) {
     periodEnd: u.sub_period_end,
     cancelAtEnd: !!u.sub_cancel_at_end,
     hasCustomer: !!u.stripe_customer_id,
+    plan: isSubscribed(env, u) ? (isPro(env, u) ? "pro" : "host") : "none",
+    pro: isPro(env, u),
     price: priceLabel(env),
+    proPrice: proPriceLabel(env),
   };
 }
 
@@ -282,7 +304,7 @@ async function resetPassword(c: Ctx): Promise<Response> {
   if (password.length > 200) return fail("That password is too long.");
   const userId = await takeToken(db, str(b.token, 100), "reset");
   if (!userId) return fail("This link has expired or was already used. Please ask for a new one.", 410);
-  const u = await db.prepare("SELECT * FROM users WHERE id = ?1").bind(userId).first<UserRow>();
+  const u = await db.prepare(`${USER_SQL} WHERE u.id = ?1`).bind(userId).first<UserRow>();
   if (!u) return fail("This link has expired or was already used. Please ask for a new one.", 410);
   const hash = await hashPassword(password);
   await db.batch([
@@ -313,6 +335,9 @@ async function deleteAccount(c: Ctx, u: UserRow): Promise<Response> {
     db.prepare("DELETE FROM meeting_refs WHERE owner_id = ?1").bind(u.id),
     db.prepare("DELETE FROM api_keys WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM embed_origins WHERE user_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM pro_settings WHERE user_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM logos WHERE user_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM user_plan WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM email_tokens WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM users WHERE id = ?1").bind(u.id),
   ]);
@@ -321,22 +346,45 @@ async function deleteAccount(c: Ctx, u: UserRow): Promise<Response> {
 
 /* ---------- billing (Stripe subscription) ---------- */
 
+const live = (status: string) => status === "active" || status === "trialing";
+
 async function syncSubscription(env: Env, userId: number, sub: StripeSubscription): Promise<void> {
-  const u = await env.DB.prepare("SELECT stripe_sub_id FROM users WHERE id = ?1").bind(userId).first<{ stripe_sub_id: string | null }>();
+  const u = await env.DB
+    .prepare(`SELECT u.stripe_sub_id, u.sub_status, COALESCE(p.plan, 'host') AS plan FROM users u LEFT JOIN user_plan p ON p.user_id = u.id WHERE u.id = ?1`)
+    .bind(userId)
+    .first<{ stripe_sub_id: string | null; sub_status: string; plan: Plan }>();
   if (!u) return;
-  // A late event about an old, ended subscription must not undo a newer one.
-  if (u.stripe_sub_id && u.stripe_sub_id !== sub.id && ["canceled", "incomplete_expired"].includes(sub.status)) return;
-  await env.DB
-    .prepare(
-      "UPDATE users SET stripe_customer_id = ?1, stripe_sub_id = ?2, sub_status = ?3, sub_period_end = ?4, sub_cancel_at_end = ?5 WHERE id = ?6"
-    )
-    .bind(sub.customer, sub.id, sub.status, periodEndMs(sub), sub.cancel_at_period_end ? 1 : 0, userId)
-    .run();
+  const plan = planOf(sub);
+  let replaced: string | null = null;
+  if (u.stripe_sub_id && u.stripe_sub_id !== sub.id) {
+    // News about a different subscription. Only switch to it if it's live and the current one isn't, or it's an
+    // upgrade (Host to Pro). Late events about old or replaced subscriptions never undo the current one.
+    if (!live(sub.status)) return;
+    if (live(u.sub_status) && !(plan === "pro" && u.plan !== "pro")) return;
+    if (live(u.sub_status)) replaced = u.stripe_sub_id; // upgrading: the old Host subscription is cancelled below
+  }
+  await env.DB.batch([
+    env.DB
+      .prepare("UPDATE users SET stripe_customer_id = ?1, stripe_sub_id = ?2, sub_status = ?3, sub_period_end = ?4, sub_cancel_at_end = ?5 WHERE id = ?6")
+      .bind(sub.customer, sub.id, sub.status, periodEndMs(sub), sub.cancel_at_period_end ? 1 : 0, userId),
+    env.DB.prepare("INSERT INTO user_plan (user_id, plan) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET plan = ?2").bind(userId, plan),
+  ]);
+  if (replaced && env.STRIPE_SECRET_KEY) {
+    try {
+      await cancelSubscriptionNow(env, replaced); // the unused time is credited to the customer
+    } catch (err) {
+      console.error(`Upgraded to Pro but couldn't cancel the old subscription ${replaced}:`, err);
+    }
+  }
 }
 
 async function checkout(c: Ctx, u: UserRow): Promise<Response> {
   if (!c.env.STRIPE_SECRET_KEY) return fail("Payments aren't set up yet. Please contact the site owner.", 503);
-  if (isSubscribed(c.env, u) && c.env.DEV_SKIP_BILLING !== "1") return fail("Your host account is already active.");
+  const plan: Plan = (await body(c.req)).plan === "pro" ? "pro" : "host";
+  if (c.env.DEV_SKIP_BILLING !== "1") {
+    if (isPro(c.env, u)) return fail("You're already on Pro.");
+    if (isSubscribed(c.env, u) && plan === "host") return fail("Your host account is already active.");
+  }
   try {
     const s = await createSubscriptionCheckout(c.env, {
       origin: origin(c),
@@ -344,6 +392,7 @@ async function checkout(c: Ctx, u: UserRow): Promise<Response> {
       email: u.email,
       customerId: u.stripe_customer_id,
       appName: c.env.APP_NAME,
+      plan,
     });
     return s.url ? json({ url: s.url }) : fail("Couldn't start checkout. Please try again.", 502);
   } catch (err) {
@@ -362,7 +411,7 @@ async function confirmCheckout(c: Ctx, u: UserRow): Promise<Response> {
     if (s.client_reference_id !== String(u.id) || s.mode !== "subscription") return fail("That checkout isn't yours.", 403);
     if (s.status !== "complete" || !s.subscription) return json({ user: publicUser(c.env, u), pending: true });
     await syncSubscription(c.env, u.id, await retrieveSubscription(c.env, s.subscription));
-    const fresh = await c.env.DB.prepare("SELECT * FROM users WHERE id = ?1").bind(u.id).first<UserRow>();
+    const fresh = await c.env.DB.prepare(`${USER_SQL} WHERE u.id = ?1`).bind(u.id).first<UserRow>();
     return json({ user: publicUser(c.env, fresh!) });
   } catch (err) {
     console.error("Checkout confirm failed:", err);
@@ -573,20 +622,26 @@ async function rotatePersonalRoom(c: Ctx, u: UserRow): Promise<Response> {
 
 /* ---------- joining a meeting ---------- */
 
-type Room = { title: string; hostName: string; ownerId: number; owner: Pick<UserRow, "sub_status">; personal: boolean; startsAt: number | null; durationMin: number | null };
+type Room = { title: string; hostName: string; ownerId: number; owner: Pick<UserRow, "id" | "sub_status" | "plan">; personal: boolean; startsAt: number | null; durationMin: number | null };
 
 async function findRoom(env: Env, id: string): Promise<Room | null> {
   if (!/^[a-z2-9]{12}$/.test(id)) return null;
   const m = await env.DB
-    .prepare("SELECT m.*, u.name AS host_name, u.sub_status FROM meetings m JOIN users u ON u.id = m.owner_id WHERE m.id = ?1")
+    .prepare(
+      `SELECT m.*, u.name AS host_name, u.sub_status, COALESCE(p.plan, 'host') AS plan
+       FROM meetings m JOIN users u ON u.id = m.owner_id LEFT JOIN user_plan p ON p.user_id = u.id WHERE m.id = ?1`
+    )
     .bind(id)
-    .first<MeetingRow & { host_name: string; sub_status: string }>();
+    .first<MeetingRow & { host_name: string; sub_status: string; plan: Plan }>();
   if (m) {
-    return { title: m.title, hostName: m.host_name, ownerId: m.owner_id, owner: { sub_status: m.sub_status }, personal: false, startsAt: m.starts_at, durationMin: m.duration_min };
+    return { title: m.title, hostName: m.host_name, ownerId: m.owner_id, owner: { id: m.owner_id, sub_status: m.sub_status, plan: m.plan }, personal: false, startsAt: m.starts_at, durationMin: m.duration_min };
   }
-  const u = await env.DB.prepare("SELECT id, name, sub_status FROM users WHERE personal_room = ?1").bind(id).first<{ id: number; name: string; sub_status: string }>();
+  const u = await env.DB
+    .prepare(`SELECT u.id, u.name, u.sub_status, COALESCE(p.plan, 'host') AS plan FROM users u LEFT JOIN user_plan p ON p.user_id = u.id WHERE u.personal_room = ?1`)
+    .bind(id)
+    .first<{ id: number; name: string; sub_status: string; plan: Plan }>();
   if (u) {
-    return { title: `${u.name}'s room`, hostName: u.name, ownerId: u.id, owner: { sub_status: u.sub_status }, personal: true, startsAt: null, durationMin: null };
+    return { title: `${u.name}'s room`, hostName: u.name, ownerId: u.id, owner: { id: u.id, sub_status: u.sub_status, plan: u.plan }, personal: true, startsAt: null, durationMin: null };
   }
   return null;
 }
@@ -608,9 +663,13 @@ async function roomInfo(c: Ctx, id: string): Promise<Response> {
   const me = await getUser(c);
   const link = await linkFor(c, id, c.url.searchParams.get("link"));
   const isHost = (!!me && me.id === r.ownerId) || link?.role === "host";
+  const pro = await proForRoom(c.env, r.owner);
   return json({
-    title: r.title,
-    hostName: r.hostName,
+    title: r.personal && pro?.brand.name ? pro.brand.name : r.title,
+    hostName: pro?.brand.name || r.hostName,
+    brand: pro?.brand ?? null,
+    waiting: pro?.waiting ?? null,
+    redirectUrl: pro?.redirectUrl || "",
     personal: r.personal,
     startsAt: r.startsAt,
     status: roomStatus(c.env, r, isHost),
@@ -782,7 +841,10 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
 
   if (path === "/api/stripe/webhook" && post) return stripeWebhook(c); // signed by Stripe, not a browser
   if (path.startsWith("/api/v1/")) return handleV1(c); // for other services: API key, not a browser session
-  if (post && (!sameOrigin(req, url) || !isJson(req))) return fail("Forbidden", 403);
+  // Browser calls must come from this site as JSON. The one exception is a logo upload, which is an image
+  // (also a type a plain cross-site form can't send).
+  const imageUpload = path === "/api/pro/logo" && /^image\/(png|jpeg|webp)$/.test((req.headers.get("Content-Type") ?? "").toLowerCase());
+  if (post && (!sameOrigin(req, url) || (!isJson(req) && !imageUpload))) return fail("Forbidden", 403);
   if (!env.SESSION_SECRET) return fail("Not set up yet: the SESSION_SECRET secret is missing.", 503);
 
   // public
@@ -800,7 +862,7 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   // signed-in
   const u = await getUser(c);
   if (path === "/api/me" && req.method === "GET") {
-    return json({ user: u ? publicUser(env, u) : null, appName: env.APP_NAME, price: priceLabel(env) });
+    return json({ user: u ? publicUser(env, u) : null, appName: env.APP_NAME, price: priceLabel(env), proPrice: proPriceLabel(env) });
   }
   if (!u) return fail("Please log in first.", 401);
 
@@ -810,6 +872,8 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   if (path === "/api/billing/confirm" && post) return confirmCheckout(c, u);
   if (path === "/api/billing/portal" && post) return portal(c, u);
   if (path === "/api/personal-room/rotate" && post) return rotatePersonalRoom(c, u);
+  const proRes = await handlePro(c, u, path, req.method);
+  if (proRes) return proRes;
   if (path === "/api/keys" && req.method === "GET") return listKeys(c, u);
   if (path === "/api/embed-origins" && req.method === "GET") return listEmbedOrigins(c, u);
   if (path === "/api/embed-origins" && post) return addEmbedOrigin(c, u);

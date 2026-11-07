@@ -50,6 +50,7 @@
     const d = await me();
     document.querySelectorAll("[data-app]").forEach((e) => (e.textContent = d.appName));
     document.querySelectorAll("[data-price]").forEach((e) => (e.textContent = d.price));
+    document.querySelectorAll("[data-pro-price]").forEach((e) => { if (d.proPrice) e.textContent = d.proPrice; });
     document.querySelectorAll("[data-origin]").forEach((e) => (e.textContent = location.origin));
     document.querySelectorAll("[data-signed-in]").forEach((e) => (e.hidden = !d.user));
     document.querySelectorAll("[data-signed-out]").forEach((e) => (e.hidden = !!d.user));

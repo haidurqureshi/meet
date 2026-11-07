@@ -1,7 +1,8 @@
 # Meet: accounts, hosted video meetings, £10/month
 
 A separate app (its own Worker, D1 database and Durable Objects; nothing to do with the tutoring site).
-People **sign up free** with an email and password. **Hosting** meetings needs an active **£10/month** subscription (Stripe).
+People **sign up free** with an email and password. **Hosting** meetings needs an active subscription (Stripe): **Host** at
+£10/month, or **Pro** at £15/month, which adds branding, a vanity link, a waiting room and an after-call page.
 **Guests** join from a link with no account and it's free. Up to **4 people** per meeting (or up to 20 with the optional
 RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing is recorded.
 
@@ -46,6 +47,21 @@ RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing i
   its own page. The host lists which websites may do this on the dashboard; meeting pages allow framing only by those
   sites (and only while the host is subscribed), every other page can't be framed. Inside a frame the meeting hides
   this site's links and tells the parent page what's happening (`ready`, `joined`, `people`, `left`, `ended`).
+- **Pre-call check (everyone):** before joining, guests see a big green tick when their camera and microphone work, a
+  live mic level, a speaker test sound and camera/mic pickers. If the browser is blocking them, a one-step guide for that
+  browser (Chrome, Edge, Firefox, Safari, iPhone, Android) with a "Try again" button; if another app is using the camera,
+  they're told to close it.
+- **Pro plan** (`PRO_PRICE_PENCE`, default £15/month; or a Stripe Price in `STRIPE_PRO_PRICE_ID`):
+  - **Branding:** logo (PNG/JPEG/WebP up to 200 KB, checked by its bytes; no SVG) and brand colour, shown instead of
+    this site's look on the join screen, in the call and at the end (including the tab icon).
+  - **Vanity link:** `meet.example.com/your-name` opens the host's personal room. Site pages and look-alike names are
+    reserved. The name stays claimed while the account exists, but only works while the account is on Pro.
+  - **Waiting room:** a welcome message, a 3-point agenda and a question for guests. Answers go only to hosts (a pop-up
+    and in People).
+  - **After-call page:** hosts get "End meeting for everyone" (Leave menu). Guests are then taken to the host's https page
+    (an invoice, booking or feedback form) after a 3-second countdown; inside an iframe they get a Continue button.
+  - Upgrading from Host starts a Pro subscription in Stripe Checkout and then cancels the Host one, crediting the unused
+    time. If the Pro payment fails, the Pro features switch off until it's fixed (nothing is deleted).
 - **Video:** WebRTC mesh: everyone connects to everyone, so 4 people means 3 connections each. **All media is relayed
   through Cloudflare TURN**, so nobody sees anyone's IP address and every call takes the same path. A small Durable
   Object per meeting (`src/room.ts`) only passes the "find each other" messages and chat. Bitrate is lowered

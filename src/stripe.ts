@@ -4,9 +4,9 @@ import type { Env } from "./env";
 // Minimal Stripe client using fetch (no SDK needed on Cloudflare Workers).
 const API = "https://api.stripe.com/v1";
 
-async function stripe<T>(secret: string, path: string, body?: URLSearchParams, idempotencyKey?: string): Promise<T> {
+async function stripe<T>(secret: string, path: string, body?: URLSearchParams, idempotencyKey?: string, method?: string): Promise<T> {
   const res = await fetch(`${API}${path}`, {
-    method: body ? "POST" : "GET",
+    method: method ?? (body ? "POST" : "GET"),
     headers: {
       Authorization: `Bearer ${secret}`,
       ...(body ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
@@ -40,15 +40,33 @@ export type CheckoutSession = {
   client_reference_id: string | null;
 };
 
+export type Plan = "host" | "pro";
+
 export function pricePence(env: Env): number {
   const n = Number.parseInt(env.PRICE_PENCE, 10);
   return Number.isFinite(n) && n >= 30 ? n : 1000;
 }
 
+export function proPricePence(env: Env): number {
+  const n = Number.parseInt(env.PRO_PRICE_PENCE ?? "", 10);
+  return Number.isFinite(n) && n >= 30 ? n : 1500;
+}
+
+/** The plan a Stripe subscription is for (set when it was bought). */
+export const planOf = (sub: StripeSubscription): Plan => (sub.metadata?.plan === "pro" ? "pro" : "host");
+
+/** Cancels a subscription now, crediting the unused time to the customer (used when upgrading Host to Pro). */
+export async function cancelSubscriptionNow(env: Env, id: string): Promise<void> {
+  const b = new URLSearchParams({ prorate: "true" });
+  await stripe(env.STRIPE_SECRET_KEY!, `/subscriptions/${encodeURIComponent(id)}`, b, undefined, "DELETE");
+}
+
 export async function createSubscriptionCheckout(
   env: Env,
-  opts: { origin: string; userId: number; email: string; customerId: string | null; appName: string }
+  opts: { origin: string; userId: number; email: string; customerId: string | null; appName: string; plan: Plan }
 ): Promise<CheckoutSession> {
+  const pro = opts.plan === "pro";
+  const priceId = (pro ? env.STRIPE_PRO_PRICE_ID : env.STRIPE_PRICE_ID)?.trim();
   const b = new URLSearchParams();
   b.set("mode", "subscription");
   b.set("client_reference_id", String(opts.userId));
@@ -57,16 +75,20 @@ export async function createSubscriptionCheckout(
   b.set("success_url", `${opts.origin}/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`);
   b.set("cancel_url", `${opts.origin}/dashboard?checkout=cancelled`);
   b.set("line_items[0][quantity]", "1");
-  if (env.STRIPE_PRICE_ID?.trim()) {
-    b.set("line_items[0][price]", env.STRIPE_PRICE_ID.trim());
+  if (priceId) {
+    b.set("line_items[0][price]", priceId);
   } else {
     b.set("line_items[0][price_data][currency]", "gbp");
-    b.set("line_items[0][price_data][unit_amount]", String(pricePence(env)));
+    b.set("line_items[0][price_data][unit_amount]", String(pro ? proPricePence(env) : pricePence(env)));
     b.set("line_items[0][price_data][recurring][interval]", "month");
-    b.set("line_items[0][price_data][product_data][name]", `${opts.appName} host account`);
-    b.set("line_items[0][price_data][product_data][description]", "Host video meetings: monthly subscription, cancel any time");
+    b.set("line_items[0][price_data][product_data][name]", pro ? `${opts.appName} Pro` : `${opts.appName} host account`);
+    b.set(
+      "line_items[0][price_data][product_data][description]",
+      pro ? "Host meetings with your own branding, link, waiting room and after-call page: monthly, cancel any time" : "Host video meetings: monthly subscription, cancel any time"
+    );
   }
   b.set("subscription_data[metadata][user_id]", String(opts.userId));
+  b.set("subscription_data[metadata][plan]", opts.plan);
   b.set("allow_promotion_codes", "true");
   return stripe<CheckoutSession>(env.STRIPE_SECRET_KEY!, "/checkout/sessions", b);
 }

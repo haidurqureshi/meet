@@ -20,35 +20,72 @@
 </svg>
 
 <main id="notice" class="card" hidden>
+  <div id="nbrand" class="lbrand" hidden><img id="nlogo" alt=""><span id="nbrandname"></span></div>
   <h1 id="ntitle"></h1><p id="ntext"></p>
-  <div class="row"><a class="btn" href="/" id="nhome">Home</a><button id="nretry" class="primary" hidden>Rejoin</button></div>
+  <div class="row"><a class="btn primary" id="ngo" hidden>Continue</a><a class="btn" href="/" id="nhome">Home</a><button id="nretry" class="primary" hidden>Rejoin</button></div>
 </main>
 
 <main id="loading" class="card"><p class="muted">Loading the meeting…</p></main>
 
 <section id="lobby" class="lobby" hidden>
+  <div id="lbrand" class="lbrand" hidden><img id="llogo" alt=""><span id="lbrandname"></span></div>
   <div class="lobby-head">
     <p class="muted"><span id="lhost"></span></p>
     <h1 id="ltitle">Meeting</h1>
   </div>
-  <div class="preview">
-    <video id="lpreview" autoplay muted playsinline></video><p id="lnocam">Starting your camera…</p>
-    <div class="ctl-row">
-      <button id="lmic" class="ctl toggle" aria-pressed="false" title="Microphone (M)"><svg class="icon on"><use href="#i-mic"/></svg><svg class="icon off"><use href="#i-mic-off"/></svg><span class="lbl">Mute</span></button>
-      <button id="lcam" class="ctl toggle" aria-pressed="false" title="Camera (V)"><svg class="icon on"><use href="#i-cam"/></svg><svg class="icon off"><use href="#i-cam-off"/></svg><span class="lbl">Stop video</span></button>
+  <div class="lobby-grid">
+    <div class="lobby-left">
+      <div class="preview">
+        <video id="lpreview" autoplay muted playsinline></video><p id="lnocam">Starting your camera…</p>
+        <div class="ctl-row">
+          <button id="lmic" class="ctl toggle" aria-pressed="false" title="Microphone (M)"><svg class="icon on"><use href="#i-mic"/></svg><svg class="icon off"><use href="#i-mic-off"/></svg><span class="lbl">Mute</span></button>
+          <button id="lcam" class="ctl toggle" aria-pressed="false" title="Camera (V)"><svg class="icon on"><use href="#i-cam"/></svg><svg class="icon off"><use href="#i-cam-off"/></svg><span class="lbl">Stop video</span></button>
+        </div>
+      </div>
+
+      <div id="lcheck" class="lcheck">
+        <div id="lready" class="lready s-checking" role="status" aria-live="polite">
+          <span class="bigtick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+          <div><strong id="lreadytitle">Checking your camera and microphone…</strong><span id="lreadytext" class="small"></span></div>
+        </div>
+        <ul class="lchecks">
+          <li id="ckcam" class="ck"><span class="ckdot" aria-hidden="true"></span><span class="cktext"><strong>Camera</strong><span class="ckstate">Checking…</span></span><select id="selcam" aria-label="Choose camera" hidden></select></li>
+          <li id="ckmic" class="ck"><span class="ckdot" aria-hidden="true"></span><span class="cktext"><strong>Microphone</strong><span class="ckstate">Checking…</span></span><span class="meter" aria-hidden="true"><span id="micbar"></span></span><select id="selmic" aria-label="Choose microphone" hidden></select></li>
+          <li id="ckspk" class="ck"><span class="ckdot" aria-hidden="true"></span><span class="cktext"><strong>Speakers</strong><span class="ckstate">Play a sound to check you can hear</span></span><button type="button" id="spktest" class="smallbtn">Play test sound</button></li>
+        </ul>
+        <div id="lfix" class="lfix" hidden>
+          <h2 id="lfixtitle">Your browser is blocking the camera and microphone</h2>
+          <svg class="fixvisual" id="lfixvisual" viewBox="0 0 320 64" aria-hidden="true">
+            <rect class="fv-bar" x="4" y="14" width="312" height="36" rx="18"/>
+            <g class="fv-left"><circle class="fv-ring" cx="28" cy="32" r="15"/><path class="fv-icon" d="M23 30h10v8H23zM25 30v-3a3 3 0 0 1 6 0v3"/></g>
+            <text class="fv-url" x="52" y="37" id="lfixhost">meet.example.com</text>
+            <g class="fv-right"><circle class="fv-ring" cx="292" cy="32" r="15"/><path class="fv-icon" d="M285 28h9v8h-9zM294 31l4-2v6l-4-2M284 26l14 12"/></g>
+          </svg>
+          <ol id="lfixsteps" class="lfixsteps"></ol>
+          <button type="button" id="lretry" class="primary">Try again</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="lobby-right">
+      <section id="lwelcome" class="lwelcome" hidden>
+        <p id="lwelcometext"></p>
+        <div id="lagendawrap" hidden><h2>Agenda</h2><ol id="lagenda"></ol></div>
+      </section>
+      <form id="lform" class="lobby-form" novalidate>
+        <label id="lintakewrap" hidden><span id="lintakeq"></span><textarea id="lintake" rows="3" maxlength="500"></textarea><span class="hint">Only the host sees your answer.</span></label>
+        <label for="lname">Your name</label>
+        <div class="row"><input id="lname" maxlength="40" autocomplete="name" placeholder="How others will see you" required><button id="ljoin" class="primary big">Join now</button></div>
+        <div id="lmsg" hidden></div>
+        <p class="muted small" id="lmax">Up to 4 people. Nothing is recorded.</p>
+      </form>
     </div>
   </div>
-  <form id="lform" class="lobby-form" novalidate>
-    <label for="lname">Your name</label>
-    <div class="row"><input id="lname" maxlength="40" autocomplete="name" placeholder="How others will see you" required><button id="ljoin" class="primary big">Join now</button></div>
-    <div id="lmsg" hidden></div>
-    <p class="muted small" id="lmax">Up to 4 people. Nothing is recorded.</p>
-  </form>
 </section>
 
 <section id="room" class="room" hidden>
   <div class="bar">
-    <strong id="rtitle"></strong>
+    <span class="rtitlewrap"><img id="rlogo" class="rlogo" alt="" hidden><strong id="rtitle"></strong></span>
     <span class="meta">
       <span id="rstate" class="pill" hidden></span>
       <span id="rcount" class="pill live">1 here</span>
@@ -71,6 +108,10 @@
         <button id="ccam" class="ctl toggle" aria-pressed="false" title="Camera (V)"><svg class="icon on"><use href="#i-cam"/></svg><svg class="icon off"><use href="#i-cam-off"/></svg><span class="lbl">Stop video</span></button>
         <button id="cshare" class="ctl share" aria-pressed="false" title="Share your screen"><svg class="icon"><use href="#i-share"/></svg><span class="lbl">Share</span></button>
         <button id="cchat" class="ctl chatbtn" aria-pressed="false" title="Chat"><svg class="icon"><use href="#i-chat"/></svg><span class="lbl">Chat</span><span id="cbadge" class="badge" hidden></span></button>
+        <div id="leavemenu" class="leavemenu" hidden role="menu">
+          <button id="lmleave" role="menuitem">Leave the meeting</button>
+          <button id="lmend" class="danger" role="menuitem">End meeting for everyone</button>
+        </div>
         <button id="cleave" class="ctl leave" title="Leave the meeting"><svg class="icon"><use href="#i-leave"/></svg><span class="lbl">Leave</span></button>
       </div>
     </div>
