@@ -122,10 +122,20 @@
     case "joined":   /* they're in the call: { name, isHost } */ break;
     case "people":   /* { count } people in the call */ break;
     case "left":     /* they pressed Leave */ break;
-    case "ended":    /* call ended for them: { reason } */ break;
+    case "ended":    /* call ended for them: { reason, redirectUrl? } */ break;
+    case "media_blocked": /* camera/mic blocked: { camera, microphone } (true = blocked) */ break;
   }
 });</code></pre>
 <p>Every message also has <code>meeting</code> (the meeting id).</p>
+
+<h3>If the camera or microphone doesn't work in the iframe</h3>
+<ul>
+  <li><strong>The <code>allow</code> attribute is required</strong>, with at least <code>camera; microphone</code>. Without it every browser blocks them. If you create the iframe with JavaScript, set <code>allow</code> <em>before</em> <code>src</code>: browsers read it when the frame starts loading.</li>
+  <li><strong>If your site sends a <code>Permissions-Policy</code> header</strong>, it must let the meeting use them, e.g. <code>Permissions-Policy: camera=(self "<span data-origin>https://meet.example.com</span>"), microphone=(self "<span data-origin>https://meet.example.com</span>"), display-capture=(self "<span data-origin>https://meet.example.com</span>")</code>. A blanket <code>camera=(), microphone=()</code> (common in security-header templates) blocks the meeting in Chrome, Edge and Safari.</li>
+  <li><strong>Firefox</strong> asks for permission in the name of <em>your</em> site, and remembers the answer for your site. Someone who once clicked Block on your site has to undo it from the icon on the left of the address bar.</li>
+  <li>Browsers only start sound after a click inside the meeting. The Join button counts, so nothing extra is needed.</li>
+  <li>When the camera or microphone is blocked inside the iframe, the meeting explains it, offers <strong>Open the meeting in a new tab</strong> (which always works, and keeps the person's name and role), and sends your page a <code>media_blocked</code> event.</li>
+</ul>
 
 <h3>Reschedule or cancel</h3>
 <pre><code>curl -X PATCH <span data-origin>https://meet.example.com</span>/api/v1/meetings/k3m9xq2vbn7d \
