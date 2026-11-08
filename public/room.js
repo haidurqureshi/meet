@@ -331,6 +331,18 @@
     $("#lfixvisual").setAttribute("class", "fixvisual side-" + side);
     $("#lfixhost").textContent = location.host;
     $("#lfixsteps").innerHTML = steps.map((t) => `<li>${t}</li>`).join(""); // fixed text above, nothing from users
+    // Inside another site's iframe, that site may not be allowing the camera/mic (an iframe without
+    // allow="camera; microphone"). The browser's own settings can't fix that, but opening the meeting in its own
+    // tab always works, keeping the person's name and role. Tell the embedding page too, so it can help.
+    const inFrame = embedded && anyBlocked;
+    $("#lfixembed").hidden = !inFrame;
+    $("#lnewtab").hidden = !inFrame;
+    if (inFrame) {
+      $("#lnewtab").href = meetingLink() + (joinLink ? "?link=" + encodeURIComponent(joinLink) : "");
+      // Also right under the summary, so it's seen without scrolling inside a small frame.
+      $("#lreadytext").append(" ", Object.assign(document.createElement("a"), { href: $("#lnewtab").href, target: "_blank", rel: "noopener", textContent: "Open the meeting in a new tab" }), ".");
+      tellParent("media_blocked", { camera: blocked(camErr), microphone: blocked(micErr) });
+    }
   }
 
   const audioTrack = () => localStream && localStream.getAudioTracks()[0];
