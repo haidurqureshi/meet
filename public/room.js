@@ -197,6 +197,27 @@
   $("#lretry").onclick = () => getMedia({});
 
   /** Live microphone level, so people can see they're being heard. */
+  /*
+   * Firefox (and Safari) keep audio processing paused until the person clicks, taps or presses a key on the page,
+   * and asking it to start earlier is ignored. So: start it again on every interaction until it's running, and
+   * play any call audio the browser held back. Without this the mic meter and the "speaking" outline never move.
+   */
+  const heldBack = new Set();
+  function unlockAudio() {
+    for (const ctx of [meterCtx, audioCtx]) if (ctx && ctx.state !== "running") ctx.resume().catch(() => {});
+    for (const v of heldBack) v.play().then(() => heldBack.delete(v)).catch(() => {});
+  }
+  for (const ev of ["pointerdown", "keydown", "touchend"]) addEventListener(ev, unlockAudio, true);
+  /** Plays a call video/audio element; if the browser refuses until a click, says so and retries on the next one. */
+  function playMedia(v) {
+    v.play().then(() => heldBack.delete(v)).catch((err) => {
+      if (!err || err.name !== "NotAllowedError" || heldBack.has(v)) return;
+      heldBack.add(v);
+      toast("Tap anywhere to hear the others");
+    });
+  }
+  const audioRunning = () => !!meterCtx && meterCtx.state === "running";
+
   function startMeter() {
     cancelAnimationFrame(meterRaf);
     const track = audioTrack();
@@ -209,7 +230,8 @@
       const buf = new Uint8Array(an.fftSize);
       const tick = () => {
         if ($("#lobby").hidden) return;
-        if (meterCtx.state === "suspended") meterCtx.resume().catch(() => {});
+        const wasRunning = $("#ckmic").dataset.audio === "1";
+        if (audioRunning() !== wasRunning) { $("#ckmic").dataset.audio = audioRunning() ? "1" : ""; if (!heardMic && !micErr) setCheck(); }
         an.getByteTimeDomainData(buf);
         let peak = 0;
         for (const x of buf) peak = Math.max(peak, Math.abs(x - 128));
@@ -275,7 +297,7 @@
       return;
     }
     setRow("#ckcam", camErr ? "bad" : "ok", camErr ? errText(camErr, "camera") : "Working");
-    setRow("#ckmic", micErr ? "bad" : heardMic ? "ok" : "ok", micErr ? errText(micErr, "microphone") : heardMic ? "Working: we can hear you" : "Working: say something to test it");
+    setRow("#ckmic", micErr ? "bad" : heardMic ? "ok" : "ok", micErr ? errText(micErr, "microphone") : heardMic ? "Working: we can hear you" : meterCtx && !audioRunning() ? "Working. Click anywhere to see the level" : "Working: say something to test it");
     const fix = $("#lfix");
     const anyBlocked = blocked(camErr) || blocked(micErr), anyBusy = busy(camErr) || busy(micErr);
     if (!camErr && !micErr) {
@@ -513,7 +535,6 @@
     stream.addEventListener("addtrack", attach);
   }
   setInterval(() => {
-    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
     for (const [tile, m] of meters) {
       if (!tile.isConnected) { try { m.src.disconnect(); } catch { /* ignore */ } meters.delete(tile); continue; }
       m.an.getByteTimeDomainData(m.buf);
@@ -783,7 +804,7 @@
     const share = !!(p.screenShareEnabled && p.screenShareTracks && p.screenShareTracks.video);
     const track = share ? p.screenShareTracks.video : p.videoEnabled ? p.videoTrack : null;
     if (!track) v.srcObject = null;
-    else if (!v.srcObject || v.srcObject.getVideoTracks()[0] !== track) { v.srcObject = trackStream(track); v.play().catch(() => {}); }
+    else if (!v.srcObject || v.srcObject.getVideoTracks()[0] !== track) { v.srcObject = trackStream(track); playMedia(v); }
     setTileState(t, { mic: !!p.audioEnabled, cam: !!track, share });
   }
 
@@ -800,7 +821,7 @@
       p.stream.addTrack(e.track);
       const v = tile.querySelector("video");
       v.srcObject = p.stream;
-      v.play().catch(() => {});
+      playMedia(v);
     };
     pc.onconnectionstatechange = () => {
       const s = pc.connectionState;
