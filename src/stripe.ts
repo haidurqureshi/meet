@@ -1,5 +1,6 @@
 import { hmacHex, safeEqual } from "./crypto";
 import type { Env } from "./env";
+import { businessPricePence, proPricePence, type PaidPlan } from "./plans";
 
 // Minimal Stripe client using fetch (no SDK needed on Cloudflare Workers).
 const API = "https://api.stripe.com/v1";
@@ -26,7 +27,7 @@ export type StripeSubscription = {
   status: string;
   cancel_at_period_end?: boolean;
   current_period_end?: number; // older API versions
-  items?: { data: { current_period_end?: number }[] }; // newer API versions
+  items?: { data: { id?: string; quantity?: number; current_period_end?: number }[] }; // newer API versions
   metadata?: Record<string, string>;
 };
 
@@ -40,22 +41,25 @@ export type CheckoutSession = {
   client_reference_id: string | null;
 };
 
-export type Plan = "host" | "pro";
-
-export function pricePence(env: Env): number {
-  const n = Number.parseInt(env.PRICE_PENCE, 10);
-  return Number.isFinite(n) && n >= 30 ? n : 1000;
-}
-
-export function proPricePence(env: Env): number {
-  const n = Number.parseInt(env.PRO_PRICE_PENCE ?? "", 10);
-  return Number.isFinite(n) && n >= 30 ? n : 1500;
-}
-
 /** The plan a Stripe subscription is for (set when it was bought). */
-export const planOf = (sub: StripeSubscription): Plan => (sub.metadata?.plan === "pro" ? "pro" : "host");
+export const planOf = (sub: StripeSubscription): PaidPlan => (sub.metadata?.plan === "business" ? "business" : "pro");
 
-/** Cancels a subscription now, crediting the unused time to the customer (used when upgrading Host to Pro). */
+/** How many seats a subscription pays for (Business is charged per seat). */
+export const seatsOf = (sub: StripeSubscription): number => Math.max(1, sub.items?.data?.[0]?.quantity ?? 1);
+
+/** Changes the number of seats on a Business subscription. Stripe charges or credits the difference pro rata. */
+export async function setSeats(env: Env, subId: string, seats: number): Promise<StripeSubscription> {
+  const sub = await retrieveSubscription(env, subId);
+  const item = sub.items?.data?.[0]?.id;
+  if (!item) throw new Error("subscription has no item");
+  const b = new URLSearchParams();
+  b.set("items[0][id]", item);
+  b.set("items[0][quantity]", String(seats));
+  b.set("proration_behavior", "create_prorations");
+  return stripe<StripeSubscription>(env.STRIPE_SECRET_KEY!, `/subscriptions/${encodeURIComponent(subId)}`, b);
+}
+
+/** Cancels a subscription now, crediting the unused time to the customer (used when upgrading Pro to Business). */
 export async function cancelSubscriptionNow(env: Env, id: string): Promise<void> {
   const b = new URLSearchParams({ prorate: "true" });
   await stripe(env.STRIPE_SECRET_KEY!, `/subscriptions/${encodeURIComponent(id)}`, b, undefined, "DELETE");
@@ -63,10 +67,10 @@ export async function cancelSubscriptionNow(env: Env, id: string): Promise<void>
 
 export async function createSubscriptionCheckout(
   env: Env,
-  opts: { origin: string; userId: number; email: string; customerId: string | null; appName: string; plan: Plan }
+  opts: { origin: string; userId: number; email: string; customerId: string | null; appName: string; plan: PaidPlan; seats: number }
 ): Promise<CheckoutSession> {
   const pro = opts.plan === "pro";
-  const priceId = (pro ? env.STRIPE_PRO_PRICE_ID : env.STRIPE_PRICE_ID)?.trim();
+  const priceId = (pro ? env.STRIPE_PRO_PRICE_ID : env.STRIPE_BUSINESS_PRICE_ID)?.trim();
   const b = new URLSearchParams();
   b.set("mode", "subscription");
   b.set("client_reference_id", String(opts.userId));
@@ -74,17 +78,17 @@ export async function createSubscriptionCheckout(
   else b.set("customer_email", opts.email);
   b.set("success_url", `${opts.origin}/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`);
   b.set("cancel_url", `${opts.origin}/dashboard?checkout=cancelled`);
-  b.set("line_items[0][quantity]", "1");
+  b.set("line_items[0][quantity]", String(pro ? 1 : Math.max(1, opts.seats)));
   if (priceId) {
     b.set("line_items[0][price]", priceId);
   } else {
     b.set("line_items[0][price_data][currency]", "gbp");
-    b.set("line_items[0][price_data][unit_amount]", String(pro ? proPricePence(env) : pricePence(env)));
+    b.set("line_items[0][price_data][unit_amount]", String(pro ? proPricePence(env) : businessPricePence(env)));
     b.set("line_items[0][price_data][recurring][interval]", "month");
-    b.set("line_items[0][price_data][product_data][name]", pro ? `${opts.appName} Pro` : `${opts.appName} host account`);
+    b.set("line_items[0][price_data][product_data][name]", pro ? `${opts.appName} Pro` : `${opts.appName} Business (per user)`);
     b.set(
       "line_items[0][price_data][product_data][description]",
-      pro ? "Host meetings with your own branding, link, waiting room and after-call page: monthly, cancel any time" : "Host video meetings: monthly subscription, cancel any time"
+      pro ? "Meetings for up to 15 people with your own link, waiting room and after-call page: monthly, cancel any time" : "Meetings for up to 50 people with your branding, the API and a team: monthly per user, cancel any time"
     );
   }
   b.set("subscription_data[metadata][user_id]", String(opts.userId));

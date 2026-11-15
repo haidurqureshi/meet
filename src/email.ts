@@ -93,3 +93,16 @@ export function formatWhen(ms: number, tz: string): string {
     return new Date(ms).toUTCString();
   }
 }
+
+export function teamInviteEmail(app: string, to: string, owner: { name: string; email: string }, link: string): Mail {
+  return {
+    to,
+    subject: `${owner.name} invited you to their ${app} team`,
+    text: `${owner.name} (${owner.email}) invited you to join their team on ${app}. You'll get the Business plan at no cost to you: meetings for up to 50 people, your own branding and more.\n\nAccept the invitation (it works for 14 days):\n${link}\n\nIf you weren't expecting this, you can ignore it.\n\n${app}`,
+    html: layout(
+      app,
+      "You're invited to a team",
+      `<p><strong>${esc(owner.name)}</strong> (${esc(owner.email)}) invited you to join their team.</p><p>You'll get the Business plan at no cost to you: meetings for up to 50 people, your own branding and more.</p>${button(link, "Accept the invitation")}<p style="font-size:13px;color:#555;">The link works for 14 days. If you weren't expecting this, you can ignore it.</p>`
+    ),
+  };
+}

@@ -405,3 +405,19 @@ body.branded #nhome, body.branded .top .brand { display: none; }
 .eyebrow { display: inline-block; margin: 0; padding: .2rem .7rem; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-weight: 800; font-size: .8rem; letter-spacing: .05em; text-transform: uppercase; }
 .home-plans { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); margin: 1.5rem 0 0; text-align: left; }
 .home-plans .plan { background: var(--card); box-shadow: var(--shadow); }
+
+/* plans, seats and teams */
+.plans { grid-template-columns: repeat(auto-fit, minmax(11.5rem, 1fr)); }
+.plan strong { display: flex; align-items: center; gap: .4rem; }
+.plan-current { border: 2px solid var(--accent); }
+.plan .btn, .plan button { width: 100%; }
+.seatsrow { margin-top: 0; }
+.seatsrow .seats { width: 4.2rem; flex: none; margin: 0; border-radius: 10px 0 0 10px; }
+.seatsrow button { width: auto; flex: 1; border-radius: 0 10px 10px 0; }
+.inline-form { flex-wrap: nowrap; margin-top: .4rem; }
+.inline-form input { margin: 0; min-width: 0; flex: 1; }
+.inline-form input.seats { flex: none; width: 5.5rem; }
+.inline-form button { flex: none; }
+#brandBlock.is-locked .sublockable { opacity: .45; pointer-events: none; user-select: none; }
+.pricing-h { margin-top: 2.5rem; }
+.home-plans { grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }

@@ -19,7 +19,9 @@ import type { Env } from "./env";
 import { getIce } from "./ice";
 import { handleV1 } from "./v1";
 import { handlePro, proForRoom } from "./pro";
-import { rtkConfigured, rtkMax } from "./realtimekit";
+import { rtkConfigured } from "./realtimekit";
+import { accountFor, businessPriceLabel, live, PLAN_NAME, proPriceLabel, RANK, sfuUsed, type Account, type PaidPlan, type Plan } from "./plans";
+import { handleTeam, handleTeamPublic } from "./team";
 import { clearHits, isLimited, recordHit } from "./ratelimit";
 import {
   cancelSubscriptionNow,
@@ -27,9 +29,7 @@ import {
   createSubscriptionCheckout,
   periodEndMs,
   planOf,
-  pricePence,
-  proPricePence,
-  type Plan,
+  seatsOf,
   retrieveCheckout,
   retrieveSubscription,
   verifyWebhook,
@@ -48,11 +48,14 @@ export type UserRow = {
   sub_status: string;
   sub_period_end: number | null;
   sub_cancel_at_end: number;
-  plan: Plan; // from user_plan; "host" when there's no row
+  acct: Account; // their plan (their own, or their team's) and what it allows
 };
 
 /** Loads a user with their plan. */
-const USER_SQL = "SELECT u.*, COALESCE(p.plan, 'host') AS plan FROM users u LEFT JOIN user_plan p ON p.user_id = u.id";
+export async function loadUser(env: Env, id: number): Promise<UserRow | null> {
+  const row = await env.DB.prepare("SELECT * FROM users WHERE id = ?1").bind(id).first<Omit<UserRow, "acct">>();
+  return row ? { ...row, acct: await accountFor(env, id) } : null;
+}
 
 export type Ctx = { req: Request; env: Env; url: URL; wait: (p: Promise<unknown>) => void };
 
@@ -103,28 +106,17 @@ async function getUser(c: Ctx): Promise<UserRow | null> {
   if (!c.env.SESSION_SECRET) return null;
   const s = await readSession(c.env.SESSION_SECRET, readCookie(c.req, SESSION_COOKIE));
   if (!s) return null;
-  const row = await c.env.DB.prepare(`${USER_SQL} WHERE u.id = ?1`).bind(s.id).first<UserRow>();
+  const row = await loadUser(c.env, s.id);
   if (!row || (await passwordFingerprint(row.password_hash)) !== s.fp) return null;
   return row;
 }
 
-export const isSubscribed = (env: Env, u: Pick<UserRow, "sub_status">) =>
-  env.DEV_SKIP_BILLING === "1" || u.sub_status === "active" || u.sub_status === "trialing";
+/** Has a paid subscription of their own that's in good standing. */
+export const isSubscribed = (_env: Env, u: Pick<UserRow, "sub_status">) => live(u.sub_status);
 
-/** Pro: an active subscription on the Pro plan. */
-export const isPro = (env: Env, u: Pick<UserRow, "sub_status" | "plan">) =>
-  env.DEV_SKIP_BILLING === "1" || ((u.sub_status === "active" || u.sub_status === "trialing") && u.plan === "pro");
-
-const poundsMonth = (pence: number) => {
-  const p = pence / 100;
-  return `£${Number.isInteger(p) ? p : p.toFixed(2)}/month`;
-};
-export function priceLabel(env: Env): string {
-  return poundsMonth(pricePence(env));
-}
-export function proPriceLabel(env: Env): string {
-  return poundsMonth(proPricePence(env));
-}
+/** The answer when someone's plan doesn't include a feature. */
+export const planRequired = (plan: PaidPlan, what: string) =>
+  fail(`${what} is part of the ${PLAN_NAME[plan]} plan. Upgrade on your dashboard to use it.`, 402, { code: "plan_required", plan });
 
 function publicUser(env: Env, u: UserRow) {
   return {
@@ -134,14 +126,17 @@ function publicUser(env: Env, u: UserRow) {
     verified: !!u.email_verified,
     personalRoom: u.personal_room,
     subscribed: isSubscribed(env, u),
+    plan: u.acct.plan,
+    ownPlan: u.acct.ownPlan,
+    seats: u.acct.seats,
+    inTeam: u.acct.teamOwnerId !== null && u.acct.billingId !== u.id,
+    caps: u.acct.caps,
     subStatus: u.sub_status,
     periodEnd: u.sub_period_end,
     cancelAtEnd: !!u.sub_cancel_at_end,
     hasCustomer: !!u.stripe_customer_id,
-    plan: isSubscribed(env, u) ? (isPro(env, u) ? "pro" : "host") : "none",
-    pro: isPro(env, u),
-    price: priceLabel(env),
     proPrice: proPriceLabel(env),
+    businessPrice: businessPriceLabel(env),
   };
 }
 
@@ -304,7 +299,7 @@ async function resetPassword(c: Ctx): Promise<Response> {
   if (password.length > 200) return fail("That password is too long.");
   const userId = await takeToken(db, str(b.token, 100), "reset");
   if (!userId) return fail("This link has expired or was already used. Please ask for a new one.", 410);
-  const u = await db.prepare(`${USER_SQL} WHERE u.id = ?1`).bind(userId).first<UserRow>();
+  const u = await loadUser(c.env, userId);
   if (!u) return fail("This link has expired or was already used. Please ask for a new one.", 410);
   const hash = await hashPassword(password);
   await db.batch([
@@ -337,7 +332,10 @@ async function deleteAccount(c: Ctx, u: UserRow): Promise<Response> {
     db.prepare("DELETE FROM embed_origins WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM pro_settings WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM logos WHERE user_id = ?1").bind(u.id),
-    db.prepare("DELETE FROM user_plan WHERE user_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM account_plan WHERE user_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM team_members WHERE user_id = ?1 OR owner_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM team_invites WHERE owner_id = ?1").bind(u.id),
+    db.prepare("DELETE FROM sfu_usage WHERE owner_id = ?1").bind(u.id),
     db.prepare("DELETE FROM email_tokens WHERE user_id = ?1").bind(u.id),
     db.prepare("DELETE FROM users WHERE id = ?1").bind(u.id),
   ]);
@@ -346,45 +344,67 @@ async function deleteAccount(c: Ctx, u: UserRow): Promise<Response> {
 
 /* ---------- billing (Stripe subscription) ---------- */
 
-const live = (status: string) => status === "active" || status === "trialing";
-
 async function syncSubscription(env: Env, userId: number, sub: StripeSubscription): Promise<void> {
   const u = await env.DB
-    .prepare(`SELECT u.stripe_sub_id, u.sub_status, COALESCE(p.plan, 'host') AS plan FROM users u LEFT JOIN user_plan p ON p.user_id = u.id WHERE u.id = ?1`)
+    .prepare("SELECT u.stripe_sub_id, u.sub_status, ap.plan FROM users u LEFT JOIN account_plan ap ON ap.user_id = u.id WHERE u.id = ?1")
     .bind(userId)
-    .first<{ stripe_sub_id: string | null; sub_status: string; plan: Plan }>();
+    .first<{ stripe_sub_id: string | null; sub_status: string; plan: string | null }>();
   if (!u) return;
+  if (u.plan === "enterprise") return; // arranged by hand: Stripe events don't change it
   const plan = planOf(sub);
+  const current: Plan = u.plan === "business" ? "business" : "pro";
   let replaced: string | null = null;
   if (u.stripe_sub_id && u.stripe_sub_id !== sub.id) {
     // News about a different subscription. Only switch to it if it's live and the current one isn't, or it's an
-    // upgrade (Host to Pro). Late events about old or replaced subscriptions never undo the current one.
+    // upgrade (Pro to Business). Late events about old or replaced subscriptions never undo the current one.
     if (!live(sub.status)) return;
-    if (live(u.sub_status) && !(plan === "pro" && u.plan !== "pro")) return;
-    if (live(u.sub_status)) replaced = u.stripe_sub_id; // upgrading: the old Host subscription is cancelled below
+    if (live(u.sub_status) && RANK[plan] <= RANK[current]) return;
+    if (live(u.sub_status)) replaced = u.stripe_sub_id; // upgrading: the old subscription is cancelled below
   }
   await env.DB.batch([
     env.DB
       .prepare("UPDATE users SET stripe_customer_id = ?1, stripe_sub_id = ?2, sub_status = ?3, sub_period_end = ?4, sub_cancel_at_end = ?5 WHERE id = ?6")
       .bind(sub.customer, sub.id, sub.status, periodEndMs(sub), sub.cancel_at_period_end ? 1 : 0, userId),
-    env.DB.prepare("INSERT INTO user_plan (user_id, plan) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET plan = ?2").bind(userId, plan),
+    env.DB
+      .prepare("INSERT INTO account_plan (user_id, plan, seats) VALUES (?1, ?2, ?3) ON CONFLICT(user_id) DO UPDATE SET plan = ?2, seats = ?3")
+      .bind(userId, plan, plan === "business" ? seatsOf(sub) : 1),
   ]);
   if (replaced && env.STRIPE_SECRET_KEY) {
     try {
       await cancelSubscriptionNow(env, replaced); // the unused time is credited to the customer
     } catch (err) {
-      console.error(`Upgraded to Pro but couldn't cancel the old subscription ${replaced}:`, err);
+      console.error(`Upgraded but couldn't cancel the old subscription ${replaced}:`, err);
     }
   }
 }
 
+/** Local testing only (DEV_SKIP_BILLING=1): "buys" a plan straight away, without Stripe. */
+export async function devSetPlan(env: Env, userId: number, plan: Plan, seats: number): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare("UPDATE users SET sub_status = ?1 WHERE id = ?2").bind(plan === "free" ? "none" : "active", userId),
+    plan === "free"
+      ? env.DB.prepare("DELETE FROM account_plan WHERE user_id = ?1").bind(userId)
+      : env.DB.prepare("INSERT INTO account_plan (user_id, plan, seats) VALUES (?1, ?2, ?3) ON CONFLICT(user_id) DO UPDATE SET plan = ?2, seats = ?3").bind(userId, plan, seats),
+  ]);
+}
+
+export const MAX_SEATS = 200;
+
 async function checkout(c: Ctx, u: UserRow): Promise<Response> {
-  if (!c.env.STRIPE_SECRET_KEY) return fail("Payments aren't set up yet. Please contact the site owner.", 503);
-  const plan: Plan = (await body(c.req)).plan === "pro" ? "pro" : "host";
-  if (c.env.DEV_SKIP_BILLING !== "1") {
-    if (isPro(c.env, u)) return fail("You're already on Pro.");
-    if (isSubscribed(c.env, u) && plan === "host") return fail("Your host account is already active.");
+  const b = await body(c.req);
+  const dev = c.env.DEV_SKIP_BILLING === "1";
+  const plan = b.plan === "business" ? "business" : b.plan === "pro" ? "pro" : dev && b.plan === "free" ? "free" : null;
+  if (!plan) return fail("Please choose a plan.");
+  const seats = plan === "business" ? Math.round(Number(b.seats ?? 1)) : 1;
+  if (!Number.isInteger(seats) || seats < 1 || seats > MAX_SEATS) return fail(`Please choose between 1 and ${MAX_SEATS} users.`);
+  if (dev) {
+    await devSetPlan(c.env, u.id, plan, seats);
+    return json({ url: "/dashboard" });
   }
+  if (plan === "free") return fail("Please choose a plan.");
+  if (!c.env.STRIPE_SECRET_KEY) return fail("Payments aren't set up yet. Please contact the site owner.", 503);
+  if (u.acct.ownPlan === "enterprise") return fail("Your plan is managed for you. Please contact us to change it.");
+  if (RANK[u.acct.ownPlan] >= RANK[plan]) return fail(`You're already on ${PLAN_NAME[u.acct.ownPlan]}.`);
   try {
     const s = await createSubscriptionCheckout(c.env, {
       origin: origin(c),
@@ -393,6 +413,7 @@ async function checkout(c: Ctx, u: UserRow): Promise<Response> {
       customerId: u.stripe_customer_id,
       appName: c.env.APP_NAME,
       plan,
+      seats,
     });
     return s.url ? json({ url: s.url }) : fail("Couldn't start checkout. Please try again.", 502);
   } catch (err) {
@@ -411,7 +432,7 @@ async function confirmCheckout(c: Ctx, u: UserRow): Promise<Response> {
     if (s.client_reference_id !== String(u.id) || s.mode !== "subscription") return fail("That checkout isn't yours.", 403);
     if (s.status !== "complete" || !s.subscription) return json({ user: publicUser(c.env, u), pending: true });
     await syncSubscription(c.env, u.id, await retrieveSubscription(c.env, s.subscription));
-    const fresh = await c.env.DB.prepare(`${USER_SQL} WHERE u.id = ?1`).bind(u.id).first<UserRow>();
+    const fresh = await loadUser(c.env, u.id);
     return json({ user: publicUser(c.env, fresh!) });
   } catch (err) {
     console.error("Checkout confirm failed:", err);
@@ -515,8 +536,6 @@ export async function checkInviteAllowed(c: Ctx, u: UserRow, count: number): Pro
   return null;
 }
 
-const subscriptionRequired = (c: Ctx) =>
-  fail(`Hosting meetings needs a host account (${priceLabel(c.env)}). Subscribe from your dashboard to continue.`, 402, { code: "subscription_required" });
 
 async function listMeetings(c: Ctx, u: UserRow): Promise<Response> {
   const db = c.env.DB;
@@ -547,7 +566,6 @@ async function listMeetings(c: Ctx, u: UserRow): Promise<Response> {
 }
 
 async function createMeeting(c: Ctx, u: UserRow): Promise<Response> {
-  if (!isSubscribed(c.env, u)) return subscriptionRequired(c);
   const b = await body(c.req);
   const now = Date.now();
   const instant = b.instant === true;
@@ -578,7 +596,6 @@ async function createMeeting(c: Ctx, u: UserRow): Promise<Response> {
 }
 
 async function inviteMore(c: Ctx, u: UserRow, id: string): Promise<Response> {
-  if (!isSubscribed(c.env, u)) return subscriptionRequired(c);
   const m = await c.env.DB.prepare("SELECT * FROM meetings WHERE id = ?1 AND owner_id = ?2").bind(id, u.id).first<MeetingRow>();
   if (!m) return fail("Meeting not found.", 404);
   const b = await body(c.req);
@@ -622,34 +639,38 @@ async function rotatePersonalRoom(c: Ctx, u: UserRow): Promise<Response> {
 
 /* ---------- joining a meeting ---------- */
 
-type Room = { title: string; hostName: string; ownerId: number; owner: Pick<UserRow, "id" | "sub_status" | "plan">; personal: boolean; startsAt: number | null; durationMin: number | null };
+type Room = { title: string; hostName: string; ownerId: number; acct: Account; personal: boolean; startsAt: number | null; durationMin: number | null };
 
 async function findRoom(env: Env, id: string): Promise<Room | null> {
   if (!/^[a-z2-9]{12}$/.test(id)) return null;
   const m = await env.DB
-    .prepare(
-      `SELECT m.*, u.name AS host_name, u.sub_status, COALESCE(p.plan, 'host') AS plan
-       FROM meetings m JOIN users u ON u.id = m.owner_id LEFT JOIN user_plan p ON p.user_id = u.id WHERE m.id = ?1`
-    )
+    .prepare("SELECT m.*, u.name AS host_name FROM meetings m JOIN users u ON u.id = m.owner_id WHERE m.id = ?1")
     .bind(id)
-    .first<MeetingRow & { host_name: string; sub_status: string; plan: Plan }>();
+    .first<MeetingRow & { host_name: string }>();
   if (m) {
-    return { title: m.title, hostName: m.host_name, ownerId: m.owner_id, owner: { id: m.owner_id, sub_status: m.sub_status, plan: m.plan }, personal: false, startsAt: m.starts_at, durationMin: m.duration_min };
+    return { title: m.title, hostName: m.host_name, ownerId: m.owner_id, acct: await accountFor(env, m.owner_id), personal: false, startsAt: m.starts_at, durationMin: m.duration_min };
   }
-  const u = await env.DB
-    .prepare(`SELECT u.id, u.name, u.sub_status, COALESCE(p.plan, 'host') AS plan FROM users u LEFT JOIN user_plan p ON p.user_id = u.id WHERE u.personal_room = ?1`)
-    .bind(id)
-    .first<{ id: number; name: string; sub_status: string; plan: Plan }>();
+  const u = await env.DB.prepare("SELECT id, name FROM users WHERE personal_room = ?1").bind(id).first<{ id: number; name: string }>();
   if (u) {
-    return { title: `${u.name}'s room`, hostName: u.name, ownerId: u.id, owner: { id: u.id, sub_status: u.sub_status, plan: u.plan }, personal: true, startsAt: null, durationMin: null };
+    return { title: `${u.name}'s room`, hostName: u.name, ownerId: u.id, acct: await accountFor(env, u.id), personal: true, startsAt: null, durationMin: null };
   }
   return null;
 }
 
-function roomStatus(env: Env, r: Room, isHost: boolean): "open" | "early" | "over" | "unavailable" {
-  if (!isSubscribed(env, r.owner)) return "unavailable";
+function roomStatus(_env: Env, r: Room, isHost: boolean): "open" | "early" | "over" {
   if (r.personal || isHost) return "open";
   return windowState(r.startsAt!, r.durationMin!);
+}
+
+/**
+ * The room's limits, from its owner's plan. Larger calls (5+) need the plan to include them, RealtimeKit to be set
+ * up, and some of the month's allowance to be left; otherwise the room stays at 4 people.
+ */
+async function roomLimits(env: Env, r: Room): Promise<{ max: number; sfu: boolean; lim: number; own: number }> {
+  const caps = r.acct.caps;
+  let sfu = caps.sfu && rtkConfigured(env);
+  if (sfu && caps.sfuMinutes !== null && (await sfuUsed(env, r.acct.billingId)) >= caps.sfuMinutes) sfu = false;
+  return { max: sfu ? caps.maxPeople : 4, sfu, lim: caps.groupLimitMin, own: r.acct.billingId };
 }
 
 /** A personal join link (made through the API) for this meeting, if one came with the request and is valid. */
@@ -663,10 +684,11 @@ async function roomInfo(c: Ctx, id: string): Promise<Response> {
   const me = await getUser(c);
   const link = await linkFor(c, id, c.url.searchParams.get("link"));
   const isHost = (!!me && me.id === r.ownerId) || link?.role === "host";
-  const pro = await proForRoom(c.env, r.owner);
+  const pro = await proForRoom(c.env, r.ownerId, r.acct.caps);
+  const limits = await roomLimits(c.env, r);
   return json({
-    title: r.personal && pro?.brand.name ? pro.brand.name : r.title,
-    hostName: pro?.brand.name || r.hostName,
+    title: r.personal && pro?.brand?.name ? pro.brand.name : r.title,
+    hostName: pro?.brand?.name || r.hostName,
     brand: pro?.brand ?? null,
     waiting: pro?.waiting ?? null,
     redirectUrl: pro?.redirectUrl || "",
@@ -676,8 +698,9 @@ async function roomInfo(c: Ctx, id: string): Promise<Response> {
     isHost,
     userName: link?.name ?? me?.name ?? "",
     nameFixed: !!link,
-    maxPeople: rtkConfigured(c.env) ? rtkMax(c.env) : 4,
-    embedOrigins: await ownerEmbedOrigins(c.env, r.ownerId),
+    maxPeople: limits.max,
+    groupLimitMin: limits.lim,
+    embedOrigins: r.acct.caps.api ? await ownerEmbedOrigins(c.env, r.ownerId) : [],
     appName: c.env.APP_NAME,
   });
 }
@@ -691,7 +714,6 @@ async function joinRoom(c: Ctx): Promise<Response> {
   const link = await linkFor(c, id, b.link);
   const isHost = (!!me && me.id === r.ownerId) || link?.role === "host";
   const status = roomStatus(c.env, r, isHost);
-  if (status === "unavailable") return fail("This meeting isn't available right now. The host's account is inactive.", 403);
   if (status === "early") return fail("This meeting hasn't opened yet. It opens 15 minutes before the start time.", 403);
   if (status === "over") return fail("This meeting has finished.", 410);
 
@@ -703,8 +725,9 @@ async function joinRoom(c: Ctx): Promise<Response> {
   const lifetimeMs = 6 * 3600_000;
   const ice = await getIce(c.env, lifetimeMs / 1000);
   if (!ice) return fail("Video isn't switched on yet: the Cloudflare TURN key is missing or isn't working.", 503);
-  const token = await signJoin(c.env.SESSION_SECRET, { room: id, pid, name, host: isHost, exp: Date.now() + lifetimeMs });
-  return json({ token, pid, key: deviceKey, isHost, largeCalls: rtkConfigured(c.env) ? rtkMax(c.env) : 0, iceServers: ice.iceServers, relayOnly: ice.relayOnly, appName: c.env.APP_NAME });
+  const limits = await roomLimits(c.env, r);
+  const token = await signJoin(c.env.SESSION_SECRET, { room: id, pid, name, host: isHost, exp: Date.now() + lifetimeMs, ...limits });
+  return json({ token, pid, key: deviceKey, isHost, largeCalls: limits.sfu ? limits.max : 0, iceServers: ice.iceServers, relayOnly: ice.relayOnly, appName: c.env.APP_NAME });
 }
 
 /**
@@ -750,7 +773,7 @@ async function listKeys(c: Ctx, u: UserRow): Promise<Response> {
 }
 
 async function createKey(c: Ctx, u: UserRow): Promise<Response> {
-  if (!isSubscribed(c.env, u)) return subscriptionRequired(c);
+  if (!u.acct.caps.api) return planRequired("business", "The API");
   const b = await body(c.req);
   const name = str(b.name, 60) || "API key";
   const n = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ?1").bind(u.id).first<{ n: number }>();
@@ -793,7 +816,7 @@ export async function ownerEmbedOrigins(env: Env, ownerId: number): Promise<stri
 /** For a meeting page: the sites its owner lets show it in an iframe (only while the owner is subscribed). */
 export async function embedOriginsForRoom(env: Env, id: string): Promise<string[]> {
   const r = await findRoom(env, id);
-  if (!r || !isSubscribed(env, r.owner)) return [];
+  if (!r || !r.acct.caps.api) return [];
   return ownerEmbedOrigins(env, r.ownerId);
 }
 
@@ -802,7 +825,7 @@ async function listEmbedOrigins(c: Ctx, u: UserRow): Promise<Response> {
 }
 
 async function addEmbedOrigin(c: Ctx, u: UserRow): Promise<Response> {
-  if (!isSubscribed(c.env, u)) return subscriptionRequired(c);
+  if (!u.acct.caps.api) return planRequired("business", "Showing meetings on your own website");
   const origin = normalizeOrigin((await body(c.req)).origin);
   if (!origin) return fail('Enter the website\'s address, like "https://tutoring.example.com" (https, no path).');
   const n = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM embed_origins WHERE user_id = ?1").bind(u.id).first<{ n: number }>();
@@ -854,6 +877,8 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   if (path === "/api/forgot" && post) return forgot(c);
   if (path === "/api/reset" && post) return resetPassword(c);
   if (path === "/api/verify" && post) return verify(c);
+  const teamPublic = await handleTeamPublic(c, path, req.method);
+  if (teamPublic) return teamPublic;
   if (path === "/api/join" && post) return joinRoom(c);
   if (path === "/api/join/rtk" && post) return joinRtk(c);
   const room = /^\/api\/room\/([a-z2-9]{12})$/.exec(path);
@@ -862,7 +887,8 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   // signed-in
   const u = await getUser(c);
   if (path === "/api/me" && req.method === "GET") {
-    return json({ user: u ? publicUser(env, u) : null, appName: env.APP_NAME, price: priceLabel(env), proPrice: proPriceLabel(env) });
+    const usage = u && u.acct.caps.sfu ? { used: await sfuUsed(env, u.acct.billingId), included: u.acct.caps.sfuMinutes } : null;
+    return json({ user: u ? { ...publicUser(env, u), sfu: usage } : null, appName: env.APP_NAME, proPrice: proPriceLabel(env), businessPrice: businessPriceLabel(env), contactEmail: EMAIL_RE.test(env.CONTACT_EMAIL ?? "") ? env.CONTACT_EMAIL : "" });
   }
   if (!u) return fail("Please log in first.", 401);
 
@@ -874,6 +900,8 @@ export async function handleApi(req: Request, env: Env, url: URL, wait: (p: Prom
   if (path === "/api/personal-room/rotate" && post) return rotatePersonalRoom(c, u);
   const proRes = await handlePro(c, u, path, req.method);
   if (proRes) return proRes;
+  const teamRes = await handleTeam(c, u, path, req.method);
+  if (teamRes) return teamRes;
   if (path === "/api/keys" && req.method === "GET") return listKeys(c, u);
   if (path === "/api/embed-origins" && req.method === "GET") return listEmbedOrigins(c, u);
   if (path === "/api/embed-origins" && post) return addEmbedOrigin(c, u);

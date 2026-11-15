@@ -1,6 +1,6 @@
 (function () {
   const { $, api, show, toast, busy } = App;
-  let user = null;
+  let user = null, d = {};
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   $("#tz").textContent = tz;
 
@@ -28,7 +28,7 @@
     const first = user.name.split(" ")[0] || user.name;
     $("#who").textContent = user.name;
     $("#hello").textContent = `Hi, ${first}`;
-    $("#subhead").textContent = user.subscribed ? "Start a call now, or schedule one and we'll send the invitations." : "Become a host to start and schedule meetings.";
+    $("#subhead").textContent = "Start a call now, or schedule one and we'll send the invitations.";
     $("#acctEmail").textContent = `Signed in as ${user.email}`;
     $("#verifyBox").hidden = user.verified;
     $("#vemail").textContent = user.email;
@@ -37,48 +37,60 @@
     $("#personalGo").href = "/m/" + user.personalRoom;
     $("#personalCopy").onclick = () => App.copy(url).then(() => toast("Personal room link copied"));
 
+    renderPlan();
+    const caps = user.caps;
+    const proPanel = $("#proPanel");
+    proPanel.classList.toggle("locked", !caps.waiting);
+    proPanel.querySelector(".lockmsg").hidden = caps.waiting;
+    proPanel.querySelector(".lockable").inert = !caps.waiting;
+    $("#brandBlock").classList.toggle("is-locked", caps.waiting && !caps.branding);
+    $("#brandLock").hidden = !caps.waiting || caps.branding;
+    $("#brandBlock").querySelector(".sublockable").inert = !caps.branding;
+    const apiPanel = $("#apiPanel");
+    apiPanel.classList.toggle("locked", !caps.api);
+    apiPanel.querySelector(".lockmsg").hidden = caps.api;
+    apiPanel.querySelector(".lockable").inert = !caps.api;
+    document.querySelectorAll("[data-choose]").forEach((x) => (x.onclick = (e) => choose(x.dataset.choose, 1, e.currentTarget)));
+  }
+
+  const PLAN_NAMES = { free: "Free", pro: "Pro", business: "Business", enterprise: "Enterprise" };
+  const RANK = { free: 0, pro: 1, business: 2, enterprise: 3 };
+
+  function renderPlan() {
     const b = $("#billingBody");
     b.textContent = "";
-    if (user.subscribed) {
-      const end = user.periodEnd ? fmtDay(user.periodEnd) : null;
-      const isPro = user.plan === "pro";
-      b.append(el("p", { className: "billing-status" }, el("span", { className: "pill live" }, isPro ? "Pro" : "Host"), `${isPro ? user.proPrice : user.price}.`, end ? (user.cancelAtEnd ? ` Ends on ${end} (won't renew).` : ` Renews on ${end}.`) : ""));
-      if (!isPro) {
-        b.append(el("div", { className: "upsell" },
-          el("strong", {}, `Upgrade to Pro · ${user.proPrice}`),
-          el("p", { className: "small" }, "Your logo and colours instead of ours, your own link (meet…/your-name), a welcome screen with an agenda, and an after-call page for invoices, bookings or feedback. Your Host plan is cancelled and the unused days are credited."),
-          el("button", { className: "primary", onclick: upgrade }, "Upgrade to Pro")));
-      }
-      if (user.hasCustomer) b.append(el("div", { className: "row" }, el("button", { onclick: portal }, "Manage billing or cancel")));
-    } else {
-      const was = user.subStatus && user.subStatus !== "none";
-      if (was) b.append(el("p", { className: "billing-status" }, el("span", { className: "pill" }, user.subStatus === "past_due" ? "Payment failed" : "Inactive"), "Your subscription isn't active, so your meeting links won't open."));
-      b.append(el("p", {}, "Choose a plan. Cancel any time. Guests joining your meetings never pay."));
-      const plan = (name, price, points, onclick, primary) => el("div", { className: "plan" + (primary ? " plan-pro" : "") },
-        el("strong", {}, name), el("div", { className: "plan-price" }, price),
-        el("ul", {}, ...points.map((t) => el("li", {}, t))),
-        el("button", { className: primary ? "primary" : "", onclick }, `Choose ${name}`));
+    const end = user.periodEnd ? fmtDay(user.periodEnd) : null;
+    const line = [el("span", { className: "pill live" }, PLAN_NAMES[user.plan])];
+    if (user.inTeam) line.push("You're on Business through your team, at no cost to you.");
+    else if (user.plan === "free") line.push("Up to 4 people. 1-to-1 calls are unlimited; calls with 3 or 4 people last 45 minutes.");
+    else if (user.plan === "pro") line.push(`${user.proPrice}.`);
+    else if (user.plan === "business") line.push(`${user.businessPrice}, ${user.seats} user${user.seats === 1 ? "" : "s"}.`);
+    else line.push("Your plan is managed for you.");
+    if (user.subscribed && end && !user.inTeam) line.push(user.cancelAtEnd ? ` Ends on ${end} (won't renew).` : ` Renews on ${end}.`);
+    b.append(el("p", { className: "billing-status" }, ...line));
+    if (user.subStatus === "past_due" || user.subStatus === "unpaid") b.append(el("p", { className: "error" }, "Your last payment failed, so you're on the Free plan for now. Update your card under Manage billing to get your plan back."));
+    if (user.sfu) {
+      const inc = user.sfu.included;
+      b.append(el("p", { className: "muted small" }, inc === null ? `Large-call minutes used this month: ${user.sfu.used.toLocaleString("en-GB")}.` : `Large-call minutes (calls of 5 or more people) used this month: ${user.sfu.used.toLocaleString("en-GB")} of ${inc.toLocaleString("en-GB")}.` + (user.sfu.used >= inc ? " You've used them all, so calls are limited to 4 people until next month." : "")));
+    }
+    if (user.ownPlan !== "enterprise") {
+      const own = user.ownPlan;
+      const card = (id, name, price, points, action) => el("div", { className: "plan" + (id === user.plan ? " plan-current" : "") },
+        el("strong", {}, name, id === user.plan ? el("span", { className: "pill" }, "Current") : null), el("div", { className: "plan-price" }, price),
+        el("ul", {}, ...points.map((t) => el("li", {}, t))), action);
+      const seatsInput = el("input", { type: "number", min: 1, max: 200, value: 1, className: "seats" });
+      seatsInput.setAttribute("aria-label", "Number of users");
       b.append(el("div", { className: "plans" },
-        plan("Host", user.price, ["Unlimited meetings", "Personal room, instant and scheduled meetings", "Email invitations", "API for your website"], subscribe, false),
-        plan("Pro", user.proPrice, ["Everything in Host", "Your logo and brand colour", "Your own link: meet…/your-name", "Welcome screen, agenda and a question for guests", "Send guests to your page after the call"], upgrade, true)));
-      if (user.hasCustomer) b.append(el("div", { className: "row" }, el("button", { onclick: portal }, "Billing details")));
+        card("free", "Free", "£0", ["Up to 4 people", "Unlimited 1-to-1 calls", "45 minutes with 3 or 4 people", "Personal room and scheduled meetings"], null),
+        card("pro", "Pro", user.proPrice, ["Up to 15 people", "No time limits", "Your own link: meet…/your-name", "Welcome screen, agenda and guest question", "After-call page", "3,000 large-call minutes a month"],
+          RANK[own] < RANK.pro ? el("button", { className: "primary", onclick: (e) => choose("pro", 1, e.currentTarget) }, "Choose Pro") : null),
+        card("business", "Business", user.businessPrice, ["Up to 50 people", "Everything in Pro", "Your logo and colours", "API and meetings on your own website", "A team: add users, each with their own account", "10,000 large-call minutes per user a month"],
+          RANK[own] < RANK.business ? el("div", { className: "row nogap seatsrow" }, seatsInput, el("button", { className: "primary", onclick: (e) => choose("business", Number(seatsInput.value) || 1, e.currentTarget) }, "Choose Business")) : null),
+        card("enterprise", "Enterprise", "Custom", ["100 or more people", "Custom large-call allowance", "Arranged with you"],
+          d.contactEmail ? el("a", { className: "btn", href: "mailto:" + d.contactEmail + "?subject=Enterprise%20plan" }, "Contact us") : el("span", { className: "muted small" }, "Contact us to arrange"))));
+      if (RANK[own] > 0 && user.subscribed) b.append(el("p", { className: "muted small" }, own === "pro" ? "Upgrading to Business cancels your Pro plan and credits the unused days." : "Add or remove users under Your team."));
     }
-    const proPanel = $("#proPanel");
-    proPanel.classList.toggle("locked", !user.pro);
-    proPanel.querySelector(".lockmsg").hidden = user.pro;
-    proPanel.querySelector(".lockable").inert = !user.pro;
-    document.querySelectorAll("[data-upgrade]").forEach((x) => (x.onclick = upgrade));
-    for (const id of ["hostTools", "schedule", "apiPanel"]) {
-      const p = $("#" + id);
-      p.classList.toggle("locked", !user.subscribed);
-      p.querySelector(".lockmsg").hidden = user.subscribed;
-      p.querySelector(".lockable").inert = !user.subscribed;
-    }
-    document.querySelectorAll("[data-subscribe]").forEach((x) => (x.onclick = subscribe));
-    // Hosts see their meeting tools first; everyone else sees how to become a host first.
-    const dash = $("#dash");
-    if (user.subscribed) dash.insertBefore($("#billing"), $("#account"));
-    else dash.insertBefore($("#billing"), $("#hostTools"));
+    if (user.hasCustomer) b.append(el("div", { className: "row" }, el("button", { onclick: portal }, user.subscribed ? "Manage billing or cancel" : "Billing details")));
   }
 
   async function redirectTo(path, btn, payload) {
@@ -90,8 +102,53 @@
     show($("#bmsg"), "error", r.data.error || "Something went wrong.");
     $("#billing").scrollIntoView({ behavior: "smooth", block: "center" });
   }
-  const subscribe = (e) => redirectTo("/api/billing/checkout", e && e.currentTarget, { plan: "host" });
-  const upgrade = (e) => redirectTo("/api/billing/checkout", e && e.currentTarget, { plan: "pro" });
+  const choose = (plan, seats, btn) => redirectTo("/api/billing/checkout", btn, { plan, seats });
+
+  /* ---------- team (Business) ---------- */
+  async function loadTeam(data) {
+    const t = data || (await api("/api/team")).data;
+    const panel = $("#teamPanel"), body = $("#teamBody");
+    body.textContent = "";
+    panel.hidden = !(t && (t.owner || t.memberOf));
+    if (panel.hidden) return;
+    if (t.memberOf && !t.owner) {
+      body.append(el("p", {}, `You're a member of ${t.memberOf.name}'s team (${t.memberOf.email}).`, t.memberActive ? " Your Business plan comes from the team." : " The team's plan isn't active at the moment."),
+        el("div", { className: "row" }, el("button", { onclick: async () => { if (!confirm("Leave this team? You'll go back to your own plan.")) return; await api("/api/team/leave", {}); location.reload(); } }, "Leave the team")));
+      return;
+    }
+    const act = async (path, payload, okText) => {
+      show($("#tmsg"), "", "");
+      const r = await api(path, payload);
+      if (!r.ok) return show($("#tmsg"), "error", r.data.error || "Something went wrong.");
+      if (okText) toast(okText);
+      loadTeam(r.data);
+      if (path === "/api/team/seats") { user.seats = r.data.seats; renderPlan(); }
+    };
+    body.append(el("p", {}, el("strong", {}, `${t.used} of ${t.seats} seat${t.seats === 1 ? "" : "s"} in use.`), " Each seat is one person, you included. Members get the Business plan on their own account."));
+    const ul = el("ul", { className: "meetings" });
+    ul.append(el("li", {}, el("div", { className: "mt" }, el("strong", {}, user.name), el("span", { className: "muted small" }, `${user.email} · owner`))));
+    for (const m of t.members) ul.append(el("li", {}, el("div", { className: "mt" }, el("strong", {}, m.name), el("span", { className: "muted small" }, m.email)),
+      el("div", { className: "row" }, el("button", { className: "linkbtn", onclick: () => confirm(`Remove ${m.name} from your team?`) && act("/api/team/remove", { userId: m.id }, "Removed") }, "Remove"))));
+    for (const e of t.invites) ul.append(el("li", {}, el("div", { className: "mt" }, el("strong", {}, e), el("span", { className: "muted small" }, "invited, not joined yet")),
+      el("div", { className: "row" }, el("button", { className: "linkbtn", onclick: () => act("/api/team/remove", { email: e }, "Invitation cancelled") }, "Cancel invitation"))));
+    body.append(ul);
+    const email = el("input", { type: "email", placeholder: "colleague@example.com" });
+    email.setAttribute("aria-label", "Email address to invite");
+    const iform = el("form", { className: "row inline-form" }, email, el("button", { className: "primary" }, "Invite"));
+    iform.onsubmit = (e) => { e.preventDefault(); act("/api/team/invite", { email: email.value.trim() }, "Invitation sent"); };
+    body.append(el("h3", { className: "subhead" }, "Invite someone"), iform);
+    const seats = el("input", { type: "number", min: 1, max: 200, value: t.seats, className: "seats" });
+    seats.setAttribute("aria-label", "Number of seats");
+    const sform = el("form", { className: "row inline-form" }, seats, el("button", {}, "Update seats"));
+    sform.onsubmit = (e) => {
+      e.preventDefault();
+      const n = Number(seats.value);
+      if (n === t.seats) return;
+      if (!confirm(n > t.seats ? `Add ${n - t.seats} seat${n - t.seats === 1 ? "" : "s"}? You'll be charged ${user.businessPrice} for each, starting now (part-month first).` : `Remove ${t.seats - n} seat${t.seats - n === 1 ? "" : "s"}? The unused time is credited to your next bill.`)) { seats.value = t.seats; return; }
+      act("/api/team/seats", { seats: n }, "Seats updated");
+    };
+    body.append(el("h3", { className: "subhead" }, "Seats"), sform);
+  }
   const portal = (e) => redirectTo("/api/billing/portal", e && e.currentTarget);
 
   $("#personalRotate").onclick = async () => {
@@ -371,7 +428,7 @@
   });
 
   async function init() {
-    const d = await App.me();
+    d = await App.me();
     document.querySelectorAll("[data-app]").forEach((x) => (x.textContent = d.appName));
     if (!d.user) { location.replace("/login?next=/dashboard"); return; }
     user = d.user;
@@ -391,6 +448,7 @@
     loadKeys();
     loadOrigins();
     loadPro();
+    loadTeam();
     // Keep "in 5 minutes" / "Live" up to date if the page stays open.
     setInterval(() => { if (!document.querySelector(".meetings form")) loadMeetings(); }, 60_000);
   }

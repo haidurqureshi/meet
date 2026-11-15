@@ -2,7 +2,8 @@
 // (welcome message, agenda, a question for guests) and a page guests are sent to when the host ends the call.
 
 import type { Ctx, UserRow } from "./api";
-import { body, isPro, json, origin, str } from "./api";
+import { body, json, origin, planRequired, str } from "./api";
+import { accountFor, type Caps } from "./plans";
 import type { Env } from "./env";
 
 /** Names that can never be a vanity link: the site's own pages and files, and names people might mistake for us. */
@@ -86,14 +87,15 @@ function shapeSettings(c: Ctx, userId: number, s: SettingsRow | null) {
 }
 
 /** What a meeting page shows for an owner on Pro: their branding, waiting room and after-call page. */
-export async function proForRoom(env: Env, owner: Pick<UserRow, "id" | "sub_status" | "plan">) {
-  if (!isPro(env, owner)) return null;
-  const s = await getSettings(env, owner.id);
+export async function proForRoom(env: Env, ownerId: number, caps: Caps) {
+  if (!caps.waiting && !caps.branding) return null;
+  const s = await getSettings(env, ownerId);
   if (!s) return null;
   return {
-    brand: { name: s.brand_name ?? "", color: s.brand_color ?? "", logoUrl: logoUrl({ env }, owner.id, s.logo_version) },
-    waiting: { welcome: s.welcome ?? "", agenda: agendaOf(s), intakeQuestion: s.intake_question ?? "" },
-    redirectUrl: s.redirect_url ?? "",
+    // Logo and colours are Business; the waiting room and after-call page are Pro and up.
+    brand: caps.branding ? { name: s.brand_name ?? "", color: s.brand_color ?? "", logoUrl: logoUrl({ env }, ownerId, s.logo_version) } : null,
+    waiting: caps.waiting ? { welcome: s.welcome ?? "", agenda: agendaOf(s), intakeQuestion: s.intake_question ?? "" } : null,
+    redirectUrl: caps.waiting ? s.redirect_url ?? "" : "",
   };
 }
 
@@ -101,13 +103,10 @@ export async function proForRoom(env: Env, owner: Pick<UserRow, "id" | "sub_stat
 export async function resolveVanity(env: Env, name: string): Promise<{ room: string; ownerId: number } | null> {
   if (!VANITY_RE.test(name) || RESERVED.has(name)) return null;
   const r = await env.DB
-    .prepare(
-      `SELECT u.id, u.personal_room, u.sub_status, COALESCE(p.plan, 'host') AS plan
-       FROM pro_settings s JOIN users u ON u.id = s.user_id LEFT JOIN user_plan p ON p.user_id = u.id WHERE s.vanity = ?1`
-    )
+    .prepare("SELECT u.id, u.personal_room FROM pro_settings s JOIN users u ON u.id = s.user_id WHERE s.vanity = ?1")
     .bind(name)
-    .first<{ id: number; personal_room: string; sub_status: string; plan: "host" | "pro" }>();
-  if (!r || !isPro(env, r)) return null;
+    .first<{ id: number; personal_room: string }>();
+  if (!r || !(await accountFor(env, r.id)).caps.vanity) return null;
   return { room: r.personal_room, ownerId: r.id };
 }
 
@@ -170,9 +169,11 @@ async function saveSettings(c: Ctx, u: UserRow): Promise<Response> {
   const cleanUrl = redirect ? cleanRedirect(redirect) : "";
   if (cleanUrl === null) return fail('The after-call page must be a full https address, like "https://buy.stripe.com/...".');
   const agenda = (Array.isArray(b.agenda) ? b.agenda : []).map((x) => str(x, 120)).filter(Boolean).slice(0, 3);
+  // Branding is Business: on Pro, whatever is stored stays as it is.
+  const old = u.acct.caps.branding ? null : await getSettings(c.env, u.id);
   const values = {
-    brand_name: str(b.brandName, 60) || null,
-    brand_color: color || null,
+    brand_name: old ? old.brand_name : str(b.brandName, 60) || null,
+    brand_color: old ? old.brand_color : color || null,
     welcome: multiline(b.welcome, 600) || null,
     agenda: agenda.length ? JSON.stringify(agenda) : null,
     intake_question: str(b.intakeQuestion, 200) || null,
@@ -220,10 +221,15 @@ async function claimVanity(c: Ctx, u: UserRow): Promise<Response> {
 export async function handlePro(c: Ctx, u: UserRow, path: string, method: string): Promise<Response | null> {
   if (!path.startsWith("/api/pro/")) return null;
   if (path === "/api/pro/settings" && method === "GET") return json({ settings: shapeSettings(c, u.id, await getSettings(c.env, u.id)) });
-  if (!isPro(c.env, u)) return fail("This is a Pro feature. Upgrade to Pro on your dashboard to use it.", 402, { code: "pro_required" });
+  const caps = u.acct.caps;
+  if (path.startsWith("/api/pro/logo")) {
+    if (!caps.branding) return planRequired("business", "Your own logo and colours");
+    if (path === "/api/pro/logo" && method === "POST") return uploadLogo(c, u);
+    if (path === "/api/pro/logo/delete" && method === "POST") return deleteLogo(c, u);
+    return null;
+  }
+  if (!caps.waiting) return planRequired("pro", "This");
   if (path === "/api/pro/settings" && method === "POST") return saveSettings(c, u);
-  if (path === "/api/pro/logo" && method === "POST") return uploadLogo(c, u);
-  if (path === "/api/pro/logo/delete" && method === "POST") return deleteLogo(c, u);
   if (path === "/api/pro/vanity/check" && method === "GET") return checkVanity(c, u);
   if (path === "/api/pro/vanity" && method === "POST") return claimVanity(c, u);
   return null;

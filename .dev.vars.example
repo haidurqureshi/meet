@@ -12,5 +12,6 @@ SESSION_SECRET=change-me-to-a-long-random-string
 
 # Testing switches. They only take effect on localhost, never in production.
 RTC_ALLOW_DIRECT=1
+# With this on, choosing a plan on the dashboard switches to it straight away, without Stripe.
 DEV_SKIP_BILLING=1
 EMAIL_DEV_LOG=1

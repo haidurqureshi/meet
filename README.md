@@ -1,10 +1,33 @@
-# Meet: accounts, hosted video meetings, £10/month
+# Meet: video meetings with Free, Pro, Business and Enterprise plans
 
 A separate app (its own Worker, D1 database and Durable Objects; nothing to do with the tutoring site).
-People **sign up free** with an email and password. **Hosting** meetings needs an active subscription (Stripe): **Host** at
-£10/month, or **Pro** at £15/month, which adds branding, a vanity link, a waiting room and an after-call page.
-**Guests** join from a link with no account and it's free. Up to **4 people** per meeting (or up to 20 with the optional
-RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing is recorded.
+People **sign up free** with an email and password and can host straight away. **Guests** join from a link with no
+account. Camera, microphone, screen sharing and chat. Nothing is recorded.
+
+| | Free | Pro (£7/month) | Business (£15/user/month) | Enterprise |
+|---|---|---|---|---|
+| People per call | 4 | 15 | 50 | 100 |
+| Calls of 5+ people (RealtimeKit) | no | yes | yes | yes |
+| Time limit | 1-to-1 unlimited; 45 min with 3-4 people | none | none | none |
+| Vanity link, waiting room, after-call page | no | yes | yes | yes |
+| Logo and colours, API, embedding | no | no | yes | yes |
+| Team with seats | no | no | yes | yes |
+| Large-call minutes a month | none | 3,000 | 10,000 per user, pooled | no limit |
+
+- Prices: `PRO_PRICE_PENCE` and `BUSINESS_PRICE_PENCE` in `wrangler.jsonc` (or Stripe Prices in `STRIPE_PRO_PRICE_ID` /
+  `STRIPE_BUSINESS_PRICE_ID`). The Free group limit is `FREE_GROUP_MINUTES`.
+- **Calls of more than 4 people need the RealtimeKit setup below.** Without it every plan is limited to 4 people.
+- **Large-call minutes** are participant-minutes in calls that have switched to RealtimeKit (5 people for 10 minutes =
+  50). When an account has used its month's allowance, its rooms go back to 4 people until the next month. A call
+  already in progress isn't cut off.
+- **Teams (Business):** the owner pays per seat (their own included), invites people by email and can add or remove
+  seats on the dashboard (Stripe charges or credits the difference). Members keep their own accounts and get Business
+  while they're in the team. If the owner's plan ends, members go back to their own plan.
+- **Enterprise** isn't sold through Checkout. Set it by hand for an account, e.g.
+  `npx wrangler d1 execute meet-db --remote --command "INSERT INTO account_plan (user_id, plan, seats) VALUES (<user id>, 'enterprise', 10) ON CONFLICT(user_id) DO UPDATE SET plan = 'enterprise', seats = 10"`.
+  Set `CONTACT_EMAIL` so the Enterprise card has a "Contact us" link.
+- The pricing table deliberately leaves out uptime SLAs, multi-region failover, dedicated TURN/SFU, custom domains
+  and SSO: the app doesn't provide them.
 
 | URL | What it is |
 |---|---|
@@ -20,8 +43,9 @@ RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing i
 - **Accounts:** email + password (PBKDF2, 100,000 rounds), sessions in an HttpOnly cookie that stops working when the
   password changes. Sign-up, login and reset requests are rate limited and sign-up has a hidden honeypot field.
 - **Subscription:** Stripe Checkout (monthly, GBP), Stripe's billing portal for cancelling or changing the card, and a
-  webhook that keeps the status up to date. Hosting is allowed while the status is `active` or `trialing`.
-  If a subscription lapses, the host's scheduled links and personal room stop opening until they resubscribe.
+  webhook that keeps the status up to date. A paid plan applies while the status is `active` or `trialing`.
+  If a payment fails or the plan is cancelled, the account goes back to Free (nothing is deleted).
+  Upgrading Pro to Business starts a new subscription and cancels the old one with the unused time credited.
 - **Meetings:** each host has a **personal room** (a permanent link), can start an **instant meeting**, or **schedule** one
   and send **email invitations** (up to 10 at a time, 30 a day; the host must have confirmed their email first).
   A scheduled room opens 15 minutes before the start and closes an hour after it is due to end. The host can enter early.
@@ -42,7 +66,7 @@ RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing i
   `/developers`). That site's server can create, reschedule, list and cancel meetings (with its own `externalId`, so
   retries never make duplicates) and get **personal join links**: e.g. the tutor as host, the student as guest, each
   with their name filled in and no account needed. Keys are stored only as a hash, can be deleted any time, are rate
-  limited, and only work from a server. The API (and creating keys) needs an active host subscription.
+  limited, and only work from a server. The API (and creating keys) needs the Business plan.
 - **Embedding:** each join link also comes with a ready-made `<iframe>`, so the other site can show the meeting inside
   its own page. The host lists which websites may do this on the dashboard; meeting pages allow framing only by those
   sites (and only while the host is subscribed), every other page can't be framed. Inside a frame the meeting hides
@@ -51,11 +75,11 @@ RealtimeKit setup below), camera, microphone, screen sharing and chat. Nothing i
   live mic level, a speaker test sound and camera/mic pickers. If the browser is blocking them, a one-step guide for that
   browser (Chrome, Edge, Firefox, Safari, iPhone, Android) with a "Try again" button; if another app is using the camera,
   they're told to close it.
-- **Pro plan** (`PRO_PRICE_PENCE`, default £15/month; or a Stripe Price in `STRIPE_PRO_PRICE_ID`):
+- **Pro and Business features** (vanity link, waiting room and after-call page from Pro; branding from Business):
   - **Branding:** logo (PNG/JPEG/WebP up to 200 KB, checked by its bytes; no SVG) and brand colour, shown instead of
     this site's look on the join screen, in the call and at the end (including the tab icon).
   - **Vanity link:** `meet.example.com/your-name` opens the host's personal room. Site pages and look-alike names are
-    reserved. The name stays claimed while the account exists, but only works while the account is on Pro.
+    reserved. The name stays claimed while the account exists, but only works while the account is on Pro or above.
   - **Waiting room:** a welcome message, a 3-point agenda and a question for guests. Answers go only to hosts (a pop-up
     and in People).
   - **After-call page:** hosts get "End meeting for everyone" (Leave menu). Guests are then taken to the host's https page
@@ -98,16 +122,19 @@ npx wrangler secret put STRIPE_WEBHOOK_SECRET
 **Cost:** Cloudflare's docs say the first 1,000 GB of relayed data per month is free (shared with their other
 Realtime services), then $0.05 per GB. In a 4-person call each person uploads their video three times and everything is relayed,
 so a rough guide is **1 to 2 GB per person per hour** at 3 other people (the app caps bitrates to keep this down).
-Check Cloudflare's Realtime pricing page for current numbers. At £10 a month per host this leaves plenty of margin, but watch it.
+Check Cloudflare's Realtime pricing page for current numbers. Free accounts use this too, so watch it.
 
-### Stripe (the £10/month)
+### Stripe (Pro and Business)
 
 1. Stripe dashboard, **Developers, API keys**: copy the **secret key** (`sk_live_...`, or `sk_test_...` to try it first) into `STRIPE_SECRET_KEY`.
 2. **Developers, Webhooks, Add endpoint**: URL `https://<your-worker-address>/api/stripe/webhook`. Select these events:
    `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`.
    Copy the **signing secret** (`whsec_...`) into `STRIPE_WEBHOOK_SECRET`.
 3. **Settings, Billing, Customer portal**: switch it on and allow cancelling subscriptions.
-4. The price is `PRICE_PENCE` in `wrangler.jsonc` (`1000` = £10). Or create a recurring Price in Stripe and put its `price_...` id in `STRIPE_PRICE_ID`.
+4. Prices are `PRO_PRICE_PENCE` and `BUSINESS_PRICE_PENCE` in `wrangler.jsonc` (`700` = £7). Or create recurring Prices in Stripe and
+   put their `price_...` ids in `STRIPE_PRO_PRICE_ID` and `STRIPE_BUSINESS_PRICE_ID` (the Business one is charged per seat).
+5. In the customer portal settings, leave **switching plans** and **changing quantities** off: upgrades and seats go through this
+   site's dashboard, which is how the app knows the plan.
 
 After paying, the person is sent back to the dashboard and the app confirms the payment straight with Stripe, so access
 appears immediately; the webhook then keeps renewals, failed payments and cancellations in sync.
@@ -125,7 +152,7 @@ Without this setup, the 5th person sees "Meeting is full", as before.
    everyone else. If yours are named differently, put their names in `RTK_PRESET_HOST` / `RTK_PRESET_GUEST`.
 3. Create an **API token** (My Profile, API Tokens) with **Realtime** edit permission for your account.
 4. In `wrangler.jsonc` set `RTK_ACCOUNT_ID` (your account ID, shown on the dashboard's overview page) and `RTK_APP_ID`.
-   `RTK_MAX_PARTICIPANTS` (default 20) caps meetings once they've switched.
+   The owner's plan decides how many people fit (15, 50 or 100).
 5. `npx wrangler secret put RTK_API_TOKEN`, then `npm run deploy`.
 
 **Cost:** RealtimeKit is billed per participant minute. Check Cloudflare's RealtimeKit pricing before turning it on.
@@ -153,14 +180,14 @@ npm run db:local                   # creates the local tables
 npm run dev                        # http://localhost:8787
 ```
 
-In `.dev.vars`: `RTC_ALLOW_DIRECT=1` lets calls connect without a TURN key; `DEV_SKIP_BILLING=1` treats every account as
-subscribed so you can try meetings without Stripe; `EMAIL_DEV_LOG=1` prints emails to the console.
+In `.dev.vars`: `RTC_ALLOW_DIRECT=1` lets calls connect without a TURN key; `DEV_SKIP_BILLING=1` makes choosing a plan on the
+dashboard switch to it straight away, without Stripe; `EMAIL_DEV_LOG=1` prints emails to the console.
 They only take effect under `wrangler dev` (they're ignored on Cloudflare), but still don't set them in production. `npm run typecheck` checks the code.
 
 ## Limits
 
 - 4 people per meeting on direct connections (a mesh doesn't scale beyond that). With RealtimeKit set up, meetings switch
-  over automatically from the 5th person, up to `RTK_MAX_PARTICIPANTS`.
+  over automatically from the 5th person, if the owner's plan includes larger calls.
 - Screen sharing works on desktop browsers; phones can watch a shared screen but not share one.
 - Camera and microphone need `https://` (workers.dev and custom domains both are) or `localhost`.
 - No recording, waiting room or whiteboard. Anyone with a meeting link can join as a guest, so send links only to the people you mean.

@@ -14,18 +14,19 @@ export interface Env {
   // vars (wrangler.jsonc)
   APP_NAME: string;
   PUBLIC_URL?: string; // the site's address, e.g. https://meet.example.com (used for links in emails and API answers)
-  PRICE_PENCE: string;
   PRO_PRICE_PENCE?: string;
+  BUSINESS_PRICE_PENCE?: string;
   STRIPE_PRO_PRICE_ID?: string;
-  STRIPE_PRICE_ID?: string;
+  STRIPE_BUSINESS_PRICE_ID?: string;
+  FREE_GROUP_MINUTES?: string; // how long 3-4 person calls last on the Free plan (default 45)
   EMAIL_FROM?: string;
+  CONTACT_EMAIL?: string; // shown as "Contact us" for the Enterprise plan
   TURN_KEY_ID?: string;
   // Cloudflare RealtimeKit, used when a meeting grows past 4 people (all optional; without them meetings stay at 4)
   RTK_ACCOUNT_ID?: string;
   RTK_APP_ID?: string;
   RTK_PRESET_HOST?: string;
   RTK_PRESET_GUEST?: string;
-  RTK_MAX_PARTICIPANTS?: string;
   // secrets (npx wrangler secret put <NAME>)
   SESSION_SECRET: string;
   STRIPE_SECRET_KEY?: string;
