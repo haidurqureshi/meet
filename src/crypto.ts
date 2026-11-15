@@ -115,7 +115,12 @@ export async function participantId(secret: string, room: string, deviceKey: str
 
 /* ---------- meeting join tokens (checked when a browser opens the room's WebSocket) ---------- */
 
-export type JoinPayload = { room: string; pid: string; name: string; host: boolean; exp: number };
+/**
+ * max/sfu/lim/own describe the room, from the plan of whoever owns the meeting: the most people allowed, whether
+ * it may move to Cloudflare's media servers for 5+ people, the Free plan's time limit for 3+ people (minutes,
+ * 0 = none) and which account large-call minutes are counted against.
+ */
+export type JoinPayload = { room: string; pid: string; name: string; host: boolean; exp: number; max?: number; sfu?: boolean; lim?: number; own?: number };
 
 export async function signJoin(secret: string, payload: JoinPayload): Promise<string> {
   const body = toBase64Url(enc.encode(JSON.stringify(payload)));

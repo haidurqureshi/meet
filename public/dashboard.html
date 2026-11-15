@@ -12,14 +12,19 @@
 </section>
 
 <section class="panel" id="billing">
-  <h2>Host account</h2>
+  <h2>Your plan</h2>
   <div id="billingBody"></div>
   <div id="bmsg" hidden></div>
 </section>
 
+<section class="panel" id="teamPanel" hidden>
+  <h2>Your team</h2>
+  <div id="teamBody"></div>
+  <div id="tmsg" hidden></div>
+</section>
+
 <section class="panel" id="hostTools">
   <h2>Start a meeting</h2>
-  <div class="lockmsg" hidden><span>Hosting needs a host account.</span><button class="primary" data-subscribe>Become a host</button></div>
   <div class="lockable">
     <div class="row"><button id="instant" class="primary big">Start an instant meeting</button><a id="personalGo" class="btn big" href="#">Open my personal room</a></div>
     <label for="personalUrl">Your personal room link <span class="hint">Always the same. Open it whenever you're there.</span></label>
@@ -31,7 +36,6 @@
 
 <section class="panel" id="schedule">
   <h2>Schedule a meeting</h2>
-  <div class="lockmsg" hidden><span>Scheduling needs a host account.</span><button class="primary" data-subscribe>Become a host</button></div>
   <form id="sform" class="lockable" novalidate>
     <label>Title<input name="title" maxlength="100" placeholder="Team catch-up"></label>
     <div class="cols">
@@ -54,8 +58,8 @@
 </section>
 
 <section class="panel" id="proPanel">
-  <h2>Pro: your brand, your link, your waiting room</h2>
-  <div class="lockmsg" hidden><span>Look like your own business: your logo and colours, your own link, a welcome screen and an after-call page.</span><button class="primary" data-upgrade>Upgrade to Pro</button></div>
+  <h2>Your link, waiting room and branding</h2>
+  <div class="lockmsg" hidden><span>Pro adds your own link, a welcome screen with an agenda, and an after-call page. Business adds your logo and colours.</span><button class="primary" data-choose="pro">Upgrade to Pro</button></div>
   <div class="lockable">
     <h3 class="subhead">Your link</h3>
     <p class="muted small">A short, permanent address for your personal room. Claim it before someone else does.</p>
@@ -65,7 +69,10 @@
     <p id="vstate" class="small muted" aria-live="polite"></p>
     <div id="vcurrent" class="row" hidden><a id="vlink" target="_blank" rel="noopener"></a><button id="vcopy" type="button" class="smallbtn">Copy</button><button id="vrelease" type="button" class="linkbtn">Release</button></div>
 
+    <div id="brandBlock">
     <h3 class="subhead">Branding</h3>
+    <div class="lockmsg" id="brandLock" hidden><span>Your own logo and colours are part of the Business plan.</span><button class="primary" type="button" data-choose="business">Upgrade to Business</button></div>
+    <div class="sublockable">
     <p class="muted small">Shown to guests instead of this site's look: on the join screen, in the call and at the end.</p>
     <div class="brandgrid">
       <div>
@@ -85,6 +92,7 @@
       </div>
     </div>
 
+    </div></div>
     <h3 class="subhead">Waiting room</h3>
     <p class="muted small">Shown on the join screen, so guests arrive prepared.</p>
     <form id="wform" novalidate>
@@ -98,14 +106,14 @@
       <h3 class="subhead">After the call</h3>
       <label>Send guests to this page when you end the meeting <span class="hint">Optional. A full https address: an invoice, a booking page or a feedback form. You end the meeting with Leave, then "End meeting for everyone".</span><input name="redirectUrl" maxlength="500" placeholder="https://calendly.com/you/next-session" inputmode="url"></label>
       <div id="wmsg" hidden></div>
-      <div class="row"><button class="primary" id="wbtn">Save Pro settings</button><a id="wpreview" class="btn" target="_blank" rel="noopener">Open my room</a></div>
+      <div class="row"><button class="primary" id="wbtn">Save settings</button><a id="wpreview" class="btn" target="_blank" rel="noopener">Open my room</a></div>
     </form>
   </div>
 </section>
 
 <section class="panel" id="apiPanel">
   <h2>API keys</h2>
-  <div class="lockmsg" hidden><span>The API is part of the host account.</span><button class="primary" data-subscribe>Become a host</button></div>
+  <div class="lockmsg" hidden><span>The API and showing meetings on your own website are part of the Business plan.</span><button class="primary" data-choose="business">Upgrade to Business</button></div>
   <div class="lockable">
   <p class="muted">Let another website (for example a booking or tutoring site) create meetings and personal join links on this account. Give the key to that site's developer to keep on their server. <a href="/developers" target="_blank" rel="noopener">API docs for developers</a></p>
   <div id="newKey" class="ok" hidden>

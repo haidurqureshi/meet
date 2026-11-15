@@ -10,11 +10,9 @@ import {
   ownerEmbedOrigins,
   body,
   checkInviteAllowed,
-  isSubscribed,
   json,
   meetingUrl,
   parseEmails,
-  priceLabel,
   sendInvites,
   str,
   validTz,
@@ -24,6 +22,7 @@ import {
   type UserRow,
 } from "./api";
 import { randomId, sha256Hex, signInvite } from "./crypto";
+import { accountFor } from "./plans";
 import { isLimited, recordHit } from "./ratelimit";
 
 type Key = { keyId: number; lastUsed: number | null; user: UserRow };
@@ -43,7 +42,7 @@ async function authenticate(c: Ctx): Promise<Key | Response> {
     .first<UserRow & { key_id: number; last_used_at: number | null }>();
   if (!row) return err(401, "unauthorized", "That API key isn't valid. It may have been deleted.", { "WWW-Authenticate": "Bearer" });
   const { key_id, last_used_at, ...user } = row;
-  return { keyId: key_id, lastUsed: last_used_at, user: user as UserRow };
+  return { keyId: key_id, lastUsed: last_used_at, user: { ...user, acct: await accountFor(c.env, row.id) } as UserRow };
 }
 
 function shape(c: Ctx, m: MeetingRow, externalId: string | null) {
@@ -85,13 +84,13 @@ async function getOwned(c: Ctx, k: Key, id: string): Promise<{ m: MeetingRow; ex
 }
 
 const notFound = () => err(404, "not_found", "No meeting with that id on this account.");
-const needsSubscription = (c: Ctx) =>
-  err(402, "subscription_required", `This account needs an active host subscription (${priceLabel(c.env)}) to host meetings.`);
+const needsSubscription = (_c: Ctx) =>
+  err(402, "subscription_required", "The API is part of the Business plan. This account needs an active Business plan to use it.");
 
 /* ---------- endpoints ---------- */
 
 async function account(c: Ctx, k: Key): Promise<Response> {
-  return json({ data: { name: k.user.name, email: k.user.email, subscribed: isSubscribed(c.env, k.user), emailConfirmed: !!k.user.email_verified, embedOrigins: await ownerEmbedOrigins(c.env, k.user.id) } });
+  return json({ data: { name: k.user.name, email: k.user.email, plan: k.user.acct.plan, subscribed: k.user.acct.caps.api, emailConfirmed: !!k.user.email_verified, embedOrigins: await ownerEmbedOrigins(c.env, k.user.id) } });
 }
 
 async function list(c: Ctx, k: Key): Promise<Response> {
@@ -118,7 +117,7 @@ async function list(c: Ctx, k: Key): Promise<Response> {
 }
 
 async function create(c: Ctx, k: Key): Promise<Response> {
-  if (!isSubscribed(c.env, k.user)) return needsSubscription(c);
+  if (!k.user.acct.caps.api) return needsSubscription(c);
   const b = await body(c.req);
   const db = c.env.DB;
   const externalId = b.externalId === undefined || b.externalId === null ? null : String(b.externalId);
@@ -174,7 +173,7 @@ async function get(c: Ctx, k: Key, id: string): Promise<Response> {
 }
 
 async function update(c: Ctx, k: Key, id: string): Promise<Response> {
-  if (!isSubscribed(c.env, k.user)) return needsSubscription(c);
+  if (!k.user.acct.caps.api) return needsSubscription(c);
   const found = await getOwned(c, k, id);
   if (!found || found.m.kind !== "scheduled") return notFound();
   const b = await body(c.req);
@@ -210,7 +209,7 @@ async function remove(c: Ctx, k: Key, id: string): Promise<Response> {
 
 /** A personal join link: opens the meeting with this name, as a host or a guest. No account needed. */
 async function link(c: Ctx, k: Key, id: string): Promise<Response> {
-  if (!isSubscribed(c.env, k.user)) return needsSubscription(c);
+  if (!k.user.acct.caps.api) return needsSubscription(c);
   const found = await getOwned(c, k, id);
   if (!found) return notFound();
   const b = await body(c.req);
@@ -245,7 +244,7 @@ export async function handleV1(c: Ctx): Promise<Response> {
   const auth = await authenticate(c);
   if (auth instanceof Response) return auth;
   // The API is part of the paid host account.
-  if (!isSubscribed(env, auth.user)) return needsSubscription(c);
+  if (!auth.user.acct.caps.api) return needsSubscription(c);
   const rl = `api:${auth.keyId}`;
   if (await isLimited(env.DB, rl, 120, 60_000)) return err(429, "rate_limited", "Too many requests. The limit is 120 a minute per key.", { "Retry-After": "60" });
   await recordHit(env.DB, rl);

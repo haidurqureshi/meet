@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
-import { addRtkParticipant, createRtkMeeting, rtkConfigured, rtkMax } from "./realtimekit";
+import { addSfuMinutes } from "./plans";
+import { addRtkParticipant, createRtkMeeting } from "./realtimekit";
 
 // One Durable Object per meeting. It only passes small "signalling" messages between browsers (so they can
 // find each other and set up their own direct connections) and relays chat text. Video and audio never come
@@ -28,6 +29,7 @@ import { addRtkParticipant, createRtkMeeting, rtkConfigured, rtkMax } from "./re
 
 const MAX = 4;
 type Mode = "mesh" | "rtk";
+type Cfg = { max: number; sfu: boolean; lim: number; own: number };
 const PERMS = ["mic", "cam", "share", "chat"] as const;
 type Perm = (typeof PERMS)[number];
 type Allow = Record<Perm, boolean>;
@@ -61,6 +63,85 @@ export class RoomDO extends DurableObject<Env> {
 
   // Only one RealtimeKit meeting per room, even when several people ask for a token at the same moment.
   private meetingPromise: Promise<string> | null = null;
+
+  /* ---------- plan limits (from the meeting owner's plan, carried in each person's signed join token) ---------- */
+  private async cfg(): Promise<Cfg> {
+    return (await this.ctx.storage.get<Cfg>("cfg")) ?? { max: MAX, sfu: false, lim: 0, own: 0 };
+  }
+  private people(): number {
+    return new Set(this.open().map((w) => this.who(w)?.pid)).size;
+  }
+
+  /**
+   * Called whenever someone joins or leaves. Keeps the Free plan's clock for calls of 3+ people (it only runs
+   * while 3 or more are here, and starts again once everyone has left) and sets the next alarm.
+   */
+  private async track(): Promise<void> {
+    const cfg = await this.cfg();
+    const n = this.people();
+    const now = Date.now();
+    let since = await this.ctx.storage.get<number>("groupSince");
+    let used = (await this.ctx.storage.get<number>("groupUsed")) ?? 0;
+    if (n === 0) {
+      await this.ctx.storage.delete(["groupSince", "groupUsed", "usageAt"]);
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    if (cfg.lim > 0 && n >= 3 && !since) {
+      since = now;
+      await this.ctx.storage.put("groupSince", since);
+    } else if (since && (n < 3 || cfg.lim === 0)) {
+      used += now - since;
+      since = undefined;
+      await this.ctx.storage.put("groupUsed", used);
+      await this.ctx.storage.delete("groupSince");
+      for (const w of this.open()) w.send(JSON.stringify({ type: "limit", endsAt: null }));
+    }
+    const endsAt = since ? since + cfg.lim * 60_000 - used : null;
+    if (endsAt) for (const w of this.open()) w.send(JSON.stringify({ type: "limit", endsAt, minutes: cfg.lim }));
+    const rtk = (await this.mode()) === "rtk";
+    if (rtk && !(await this.ctx.storage.get<number>("usageAt"))) await this.ctx.storage.put("usageAt", now);
+    const next = Math.min(endsAt ?? Infinity, rtk ? now + 60_000 : Infinity);
+    if (Number.isFinite(next)) await this.ctx.storage.setAlarm(Math.max(next, now + 1000));
+    else await this.ctx.storage.deleteAlarm();
+  }
+
+  async alarm(): Promise<void> {
+    const cfg = await this.cfg();
+    const now = Date.now();
+    // Large calls: count participant-minutes against the owner's monthly allowance.
+    const usageAt = await this.ctx.storage.get<number>("usageAt");
+    if (usageAt && (await this.mode()) === "rtk") {
+      const minutes = Math.floor((now - usageAt) / 60_000);
+      if (minutes >= 1) {
+        await this.ctx.storage.put("usageAt", usageAt + minutes * 60_000);
+        try {
+          await addSfuMinutes(this.env, cfg.own, minutes * this.people());
+        } catch (err) {
+          console.error("Couldn't record large-call minutes:", err);
+        }
+      }
+    }
+    // Free plan: the group call has reached its time limit.
+    const since = await this.ctx.storage.get<number>("groupSince");
+    if (since && cfg.lim > 0) {
+      const used = (await this.ctx.storage.get<number>("groupUsed")) ?? 0;
+      if (now >= since + cfg.lim * 60_000 - used - 500) {
+        const out = JSON.stringify({ type: "ended", reason: "time_limit", minutes: cfg.lim });
+        for (const w of this.open()) {
+          try {
+            w.send(out);
+            w.close(4004, "time limit");
+          } catch {
+            /* already closed */
+          }
+        }
+        await this.ctx.storage.delete(["groupSince", "groupUsed", "usageAt", "mode", "permPeople", "intakes"]);
+        return;
+      }
+    }
+    await this.track();
+  }
 
   private async mode(): Promise<Mode> {
     return (await this.ctx.storage.get<Mode>("mode")) === "rtk" ? "rtk" : "mesh";
@@ -160,6 +241,12 @@ export class RoomDO extends DurableObject<Env> {
     const name = (u.searchParams.get("name") ?? "").slice(0, 40);
     const host = u.searchParams.get("host") === "1";
     if (!/^[A-Za-z0-9_-]{8,40}$/.test(pid)) return new Response("Bad id", { status: 400 });
+    const num = (k: string, d: number) => {
+      const n = Number.parseInt(u.searchParams.get(k) ?? "", 10);
+      return Number.isFinite(n) && n >= 0 ? n : d;
+    };
+    const cfg: Cfg = { max: Math.min(Math.max(num("max", MAX), MAX), 100), sfu: u.searchParams.get("sfu") === "1", lim: num("lim", 0), own: num("own", 0) };
+    await this.ctx.storage.put("cfg", cfg);
     if (request.headers.get("Upgrade") !== "websocket") return new Response("Expected a WebSocket", { status: 426 });
 
     const pair = new WebSocketPair();
@@ -180,15 +267,16 @@ export class RoomDO extends DurableObject<Env> {
 
     const others = this.open().filter((w) => w !== server && this.who(w)?.pid !== pid);
     let mode = await this.mode();
-    const limit = mode === "rtk" ? rtkMax(this.env) : MAX;
+    const limit = mode === "rtk" ? cfg.max : MAX;
     if (others.length >= limit) {
-      // A 5th person: switch the whole room to RealtimeKit if it's set up, otherwise the room is full.
-      if (mode === "mesh" && rtkConfigured(this.env) && others.length < rtkMax(this.env)) {
+      // A 5th person: switch the whole room to RealtimeKit if the owner's plan includes it, otherwise the room is full.
+      if (mode === "mesh" && cfg.sfu && others.length < cfg.max) {
         mode = "rtk";
         await this.ctx.storage.put("mode", mode);
         for (const o of others) o.send(JSON.stringify({ type: "upgrade" }));
       } else {
         server.send(JSON.stringify({ type: "full", max: limit }));
+        server.serializeAttachment(null); // never joined, so nobody is told they "left"
         server.close(4002, "full");
         return new Response(null, { status: 101, webSocket: client });
       }
@@ -201,6 +289,7 @@ export class RoomDO extends DurableObject<Env> {
     server.send(JSON.stringify({ type: "joined", you: pid, peers, mode }));
     for (const o of others) o.send(JSON.stringify({ type: "peer-joined", id: pid, name, host }));
     await this.sendRoster();
+    await this.track();
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -278,5 +367,6 @@ export class RoomDO extends DurableObject<Env> {
     // Everyone has gone: the next call in this room starts as a direct (mesh) call again.
     // The RealtimeKit meeting id is kept, so a later large call reuses the same meeting.
     if (this.open().length === 0) await this.ctx.storage.delete(["mode", "permPeople", "intakes"]);
+    await this.track();
   }
 }

@@ -73,7 +73,6 @@
     document.title = info.title;
     applyBrand(info.brand);
     if (info.status !== "open") tellParent("not_open", { status: info.status, startsAt: info.startsAt });
-    if (info.status === "unavailable") return notice("Not available", "This meeting can't be started right now. Ask the host to check their account.");
     if (info.status === "over") return notice("Meeting finished", "This meeting has ended. Ask the host for a new link.");
     if (info.status === "early") {
       const when = info.startsAt ? new Date(info.startsAt).toLocaleString("en-GB", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" }) : "";
@@ -83,7 +82,7 @@
     tellParent("ready", { title: info.title, isHost: !!info.isHost });
     $("#ltitle").textContent = info.title;
     $("#lhost").textContent = info.isHost ? "You're the host" : `Hosted by ${info.hostName}`;
-    if (info.maxPeople) $("#lmax").textContent = `Up to ${info.maxPeople} people. Nothing is recorded.`;
+    if (info.maxPeople) $("#lmax").textContent = `Up to ${info.maxPeople} people. Nothing is recorded.` + (info.groupLimitMin ? ` Calls with 3 or more people end after ${info.groupLimitMin} minutes.` : "");
     let saved = "";
     try { saved = localStorage.getItem("meet-name") || ""; } catch { /* ignore */ }
     $("#lname").value = info.userName || saved;
@@ -656,6 +655,7 @@
       clearInterval(pingTimer);
       if (mine !== ws || left) return;
       if (e.code === 4003) return hostEnded();
+      if (e.code === 4004) return timeUp();
       if (e.code === 4001) return endCall("Opened somewhere else", "You joined this meeting from another window or device, so this one was disconnected.");
       if (e.code === 4002) return endCall("Meeting is full", "This meeting already has 4 people. Ask the host, or try again when someone leaves.");
       failures++;
@@ -707,6 +707,10 @@
       toast(m.perm === "chat" ? "The host has turned off chat for you" : "The host hasn't allowed that");
     } else if (m.type === "chat") {
       addChat(m.name, m.text, false);
+    } else if (m.type === "limit") {
+      setLimit(m.endsAt, m.minutes);
+    } else if (m.type === "ended" && m.reason === "time_limit") {
+      timeUp(m.minutes);
     } else if (m.type === "ended") {
       hostEnded();
     } else if (m.type === "full") {
@@ -1117,6 +1121,7 @@
   function cleanup() {
     left = true;
     clearTimeout(retryTimer);
+    clearInterval(limitTimer); $("#rlimit").hidden = true;
     try { if (ws) ws.close(1000, "bye"); } catch { /* ignore */ }
     for (const id of [...peers.keys()]) dropPeer(id);
     if (rtk) { rtk.leave().catch(() => {}); rtk = null; }
@@ -1147,6 +1152,32 @@
     }, 150); // give the message a moment to go out
   };
   addEventListener("click", (e) => { if (!$("#leavemenu").hidden && !e.target.closest("#leavemenu")) $("#leavemenu").hidden = true; });
+
+  /* Free plan: calls with 3 or more people have a time limit. Shows the time left and warns near the end. */
+  let limitEnds = null, limitTimer = 0, limitMinutes = 45, warned = false;
+  function setLimit(endsAt, minutes) {
+    clearInterval(limitTimer);
+    const was = limitEnds;
+    limitEnds = typeof endsAt === "number" ? endsAt : null;
+    if (minutes) limitMinutes = minutes;
+    const pill = $("#rlimit");
+    if (!limitEnds) { pill.hidden = true; warned = false; return; }
+    if (!was) toast(`With 3 or more people, this call can last ${limitMinutes} minutes on the Free plan`);
+    const tick = () => {
+      const left = Math.max(0, Math.ceil((limitEnds - Date.now()) / 60_000));
+      pill.hidden = false;
+      pill.textContent = left <= 1 ? "Ends in under a minute" : `${left} min left`;
+      if (left <= 5 && !warned) { warned = true; toast(`This call ends in ${left} minute${left === 1 ? "" : "s"}. ${amHost() ? "Upgrade to remove the limit." : ""}`.trim()); }
+    };
+    tick();
+    limitTimer = setInterval(tick, 15_000);
+  }
+  function timeUp(minutes) {
+    if (left) return;
+    cleanup();
+    notice("Time's up", `Calls with 3 or more people last ${minutes || limitMinutes} minutes on the Free plan. You can start again straight away${info && info.isHost ? ", or upgrade on your dashboard for calls with no time limit" : ""}.`, true);
+    tellParent("ended", { reason: "time_limit" });
+  }
 
   function hostEnded() {
     if (left) return;

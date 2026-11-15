@@ -1,4 +1,4 @@
-import { embedOriginsForRoom, handleApi, ownerEmbedOrigins, sameOrigin } from "./api";
+import { embedOriginsForRoom, handleApi, sameOrigin } from "./api";
 import { resolveVanity, serveLogo, VANITY_RE } from "./pro";
 import { verifyJoin } from "./crypto";
 import type { Env } from "./env";
@@ -68,7 +68,15 @@ async function socket(request: Request, env: Env, url: URL): Promise<Response> {
   const who = await verifyJoin(env.SESSION_SECRET, url.searchParams.get("token"));
   if (!who) return new Response("This link has expired. Reload the page.", { status: 401 });
   const stub = env.ROOMS.get(env.ROOMS.idFromName(who.room));
-  const q = new URLSearchParams({ pid: who.pid, name: who.name, host: who.host ? "1" : "0" });
+  const q = new URLSearchParams({
+    pid: who.pid,
+    name: who.name,
+    host: who.host ? "1" : "0",
+    max: String(who.max ?? 4),
+    sfu: who.sfu ? "1" : "0",
+    lim: String(who.lim ?? 0),
+    own: String(who.own ?? 0),
+  });
   return stub.fetch(new Request(`https://room/connect?${q}`, request));
 }
 
@@ -108,7 +116,7 @@ export default {
       if (v) {
         const [page, embedders] = await Promise.all([
           env.ASSETS.fetch(new Request(new URL("/room", url), request)),
-          ownerEmbedOrigins(env, v.ownerId).catch(() => [] as string[]),
+          embedOriginsForRoom(env, v.room).catch(() => [] as string[]),
         ]);
         const res = new HTMLRewriter()
           .on("head", { element: (el) => { el.append(`<meta name="meet-room" content="${v.room}">`, { html: true }); } })

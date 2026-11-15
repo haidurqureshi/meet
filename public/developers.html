@@ -21,7 +21,7 @@
 <pre><code>Authorization: Bearer mk_...</code></pre>
 <ul>
   <li><strong>Server-to-server only.</strong> Keep the key in your server's secrets, never in web page or app code. Requests from another site's browser are refused.</li>
-  <li>The API is part of the paid host account: every request needs the key's account to have an active host subscription (otherwise <code>402</code>). Meetings made through it belong to that account.</li>
+  <li>The API is part of the <strong>Business</strong> plan: every request needs the key's account to be on Business (otherwise <code>402</code>). Meetings made through it belong to that account.</li>
   <li>Limit: 120 requests a minute per key (<code>429</code> with <code>Retry-After</code>).</li>
   <li>Deleting a key on the dashboard stops it straight away.</li>
 </ul>
@@ -176,13 +176,13 @@ const studentLink = (await meet(`/meetings/${m.id}/links`, "POST", { name: stude
   <tr><th>Status</th><th>Meaning</th></tr>
   <tr><td><code>400</code></td><td>Something in the request isn't valid. <code>code</code> says which field.</td></tr>
   <tr><td><code>401</code></td><td>Missing or wrong API key.</td></tr>
-  <tr><td><code>402</code></td><td>The account's host subscription isn't active (needed for every request).</td></tr>
+  <tr><td><code>402</code></td><td>The account isn't on the Business plan (needed for every request).</td></tr>
   <tr><td><code>403</code></td><td>Called from a browser on another site, or email not confirmed (for <code>invitees</code>).</td></tr>
   <tr><td><code>404</code></td><td>No such meeting on this account.</td></tr>
   <tr><td><code>415</code></td><td>The body must be JSON.</td></tr>
   <tr><td><code>429</code></td><td>Too many requests (or the daily invitation limit).</td></tr>
 </table>
-<p>On the <strong>Pro</strong> plan, meetings made through the API use the account's branding, waiting room and after-call page automatically. In an iframe, when the host ends the meeting the <code>ended</code> event includes <code>redirectUrl</code>, so your page can send the person there itself.</p>
+<p>Meetings made through the API use the account's branding, waiting room and after-call page automatically. In an iframe, when the host ends the meeting the <code>ended</code> event includes <code>redirectUrl</code>, so your page can send the person there itself.</p>
 <p class="muted">If both sites run on Cloudflare Workers in the same account, a service binding can call these same addresses without going over the internet. The key is still needed.</p>
 </main>
 <script src="/app.js"></script>

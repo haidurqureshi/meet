@@ -113,3 +113,37 @@ CREATE TABLE IF NOT EXISTS logos (
   data       BLOB    NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- ---------- plans (Free / Pro / Business / Enterprise), teams and large-call minutes ----------
+DROP TABLE IF EXISTS user_plan; -- replaced by account_plan
+
+-- The plan an account pays for. No row = Free. 'pro' and 'business' come from Stripe; 'enterprise' is set by hand.
+CREATE TABLE IF NOT EXISTS account_plan (
+  user_id INTEGER PRIMARY KEY,
+  plan    TEXT    NOT NULL,
+  seats   INTEGER NOT NULL DEFAULT 1
+);
+
+-- Business teams: the owner pays per seat (their own included) and invites members, who get the Business plan.
+CREATE TABLE IF NOT EXISTS team_members (
+  user_id   INTEGER PRIMARY KEY,                         -- a person is in at most one team
+  owner_id  INTEGER NOT NULL,
+  joined_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_owner ON team_members (owner_id);
+
+CREATE TABLE IF NOT EXISTS team_invites (
+  token_hash TEXT    PRIMARY KEY,
+  owner_id   INTEGER NOT NULL,
+  email      TEXT    NOT NULL,
+  expires_at INTEGER NOT NULL,
+  UNIQUE (owner_id, email)
+);
+
+-- Participant-minutes spent in large calls (5+ people, through Cloudflare's media servers), per paying account and month.
+CREATE TABLE IF NOT EXISTS sfu_usage (
+  owner_id INTEGER NOT NULL,
+  month    TEXT    NOT NULL,                             -- "2026-11"
+  minutes  INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (owner_id, month)
+);

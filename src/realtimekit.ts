@@ -9,18 +9,12 @@ import type { Env } from "./env";
 
 const API = "https://api.cloudflare.com/client/v4";
 
-export const DEFAULT_RTK_MAX = 20;
 
 /** True when everything needed to use RealtimeKit is set. Without it, meetings stay at 4 people. */
 export function rtkConfigured(env: Env): boolean {
   return !!(env.RTK_ACCOUNT_ID?.trim() && env.RTK_APP_ID?.trim() && env.RTK_API_TOKEN?.trim());
 }
 
-/** The most people allowed in a meeting once it has switched to RealtimeKit. */
-export function rtkMax(env: Env): number {
-  const n = Number.parseInt(env.RTK_MAX_PARTICIPANTS ?? "", 10);
-  return Number.isFinite(n) && n > 4 && n <= 100 ? n : DEFAULT_RTK_MAX;
-}
 
 /** Local testing only: RTK_API_BASE may point at a stand-in API on this machine, never anywhere else. */
 function apiBase(env: Env): string {
